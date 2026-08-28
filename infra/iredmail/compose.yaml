@@ -1,0 +1,45 @@
+name: xinke-iredmail
+
+services:
+  iredmail:
+    image: iredmail/mariadb:stable
+    container_name: xinke-iredmail
+    hostname: mail.xinke.test
+    env_file:
+      - ./iredmail-docker.conf
+    ports:
+      - "80:80"
+      - "443:443"
+      - "25:25"
+      - "110:110"
+      - "143:143"
+      - "465:465"
+      - "587:587"
+      - "993:993"
+      - "995:995"
+    restart: unless-stopped
+    volumes:
+      - iredmail_backup:/var/vmail/backup/mysql
+      - iredmail_mailboxes:/var/vmail/vmail1
+      - iredmail_mlmmj:/var/vmail/mlmmj
+      - iredmail_mlmmj_archive:/var/vmail/mlmmj-archive
+      - iredmail_imapsieve_copy:/var/vmail/imapsieve_copy
+      - iredmail_custom:/opt/iredmail/custom
+      - iredmail_ssl:/opt/iredmail/ssl
+      - iredmail_mysql:/var/lib/mysql
+      - iredmail_clamav:/var/lib/clamav
+      - iredmail_sa_rules:/var/lib/spamassassin
+      - iredmail_postfix_queue:/var/spool/postfix
+
+volumes:
+  iredmail_backup:
+  iredmail_mailboxes:
+  iredmail_mlmmj:
+  iredmail_mlmmj_archive:
+  iredmail_imapsieve_copy:
+  iredmail_custom:
+  iredmail_ssl:
+  iredmail_mysql:
+  iredmail_clamav:
+  iredmail_sa_rules:
+  iredmail_postfix_queue:

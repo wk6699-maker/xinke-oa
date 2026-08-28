@@ -1,0 +1,128 @@
+.record-attachments {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #dce9e5;
+  border-radius: 6px;
+  background: #f8fbfa;
+}
+
+.record-attachments-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.record-attachments-head > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.record-attachments-head strong {
+  color: #344a47;
+  font-size: 12px;
+}
+
+.record-attachments-head small,
+.attachment-empty {
+  color: #83928f;
+  font-size: 10px;
+}
+
+.record-attachments-head .secondary-btn {
+  min-height: 34px;
+  flex: 0 0 auto;
+}
+
+.attachment-list {
+  display: grid;
+  gap: 5px;
+}
+
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 38px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid #e1ece9;
+  border-radius: 5px;
+  background: #fff;
+}
+
+.attachment-item a {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: #1d7066;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-item a:hover,
+.attachment-item a:focus-visible {
+  color: #124f49;
+  text-decoration: underline;
+}
+
+.attachment-item > span {
+  flex: 0 0 auto;
+  color: #879794;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.attachment-item .icon-btn {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+}
+
+.attachment-pending {
+  border-style: dashed;
+  background: #fcfefd;
+}
+
+.attachment-pending > span {
+  color: #a07633;
+}
+
+.attachment-empty {
+  display: block;
+  padding: 6px 2px;
+}
+
+.fee-record-grid {
+  grid-template-columns: 1.35fr .72fr .88fr .8fr .86fr .86fr .86fr 1.02fr .88fr 96px;
+}
+
+@media (max-width: 760px) {
+  .record-attachments-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .record-attachments-head .secondary-btn {
+    width: 100%;
+  }
+
+  .attachment-item {
+    flex-wrap: wrap;
+  }
+
+  .attachment-item a {
+    flex-basis: calc(100% - 40px);
+  }
+
+  .attachment-item > span {
+    margin-left: auto;
+  }
+
+  .fee-record-grid {
+    min-width: 850px;
+  }
+}

@@ -1,0 +1,41 @@
+/* Expanded permission-management panels use a larger reading size. */
+.users-page:not(.is-collapsed) .permission-note strong,
+.email-schedule:not(.is-collapsed) .permission-note strong {
+  font-size: 14px;
+}
+
+.users-page:not(.is-collapsed) .permission-note span,
+.email-schedule:not(.is-collapsed) .permission-note span {
+  font-size: 13px;
+}
+
+.users-page:not(.is-collapsed) .user-grid {
+  font-size: 14px;
+}
+
+.users-page:not(.is-collapsed) .role-badge,
+.users-page:not(.is-collapsed) .status-badge {
+  font-size: 12px;
+}
+
+.email-schedule:not(.is-collapsed) .email-schedule-form label {
+  font-size: 13px;
+}
+
+.email-schedule:not(.is-collapsed) .email-schedule-form input:not([type='checkbox']),
+.email-schedule:not(.is-collapsed) .email-schedule-form select {
+  font-size: 14px;
+}
+
+.audit-log:not(.is-collapsed) .audit-grid,
+.audit-log:not(.is-collapsed) .audit-pagination {
+  font-size: 13px;
+}
+
+.audit-log:not(.is-collapsed) .audit-head,
+.audit-log:not(.is-collapsed) .audit-action,
+.audit-log:not(.is-collapsed) .audit-pagination select,
+.audit-log:not(.is-collapsed) .audit-pagination input,
+.audit-log:not(.is-collapsed) .audit-page-numbers button {
+  font-size: 12px;
+}

@@ -1,0 +1,22 @@
+[Unit]
+Description=Xinke OA
+After=network.target mariadb.service
+Requires=mariadb.service
+
+[Service]
+Type=simple
+User=xinke-email
+Group=xinke-email
+WorkingDirectory=/home/xinke-oa/current
+EnvironmentFile=/home/xinke-oa/shared/.env
+Environment=TZ=Asia/Shanghai
+ExecStart=/usr/bin/node server.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/xinke-oa/current
+
+[Install]
+WantedBy=multi-user.target

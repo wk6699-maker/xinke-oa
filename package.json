@@ -1,0 +1,33 @@
+{
+  "name": "xinke-email",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "dev": "node dev.mjs",
+    "dev:vite": "vite",
+    "api": "node server.mjs",
+    "migrate:mysql": "node scripts/migrate-sqlite-to-mysql.mjs",
+    "build": "tsc -b && vite build",
+    "deploy:production": "powershell -ExecutionPolicy Bypass -File scripts/deploy-production.ps1",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.538.0",
+    "mysql2": "3.23.4",
+    "nodemailer": "7.0.6",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  }
+}

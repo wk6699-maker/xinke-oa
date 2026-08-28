@@ -1,0 +1,76 @@
+.region-client-grid {
+  display: grid;
+  gap: 10px;
+  padding: 14px 22px 22px;
+}
+
+.region-client-row {
+  overflow: hidden;
+  border: 1px solid #e2ece9;
+  border-radius: 7px;
+  background: #fbfdfc;
+}
+
+.region-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 6px 10px;
+  overflow-x: auto;
+  color: #7d918c;
+  background: #f4f9f7;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.region-breadcrumb svg { flex: 0 0 auto; color: #a0b4ae; }
+.region-breadcrumb strong { color: #2e625c; font-weight: 600; }
+.region-client-row .directory-client { border: 0; border-radius: 0; background: #fff; }
+.region-client-row .directory-client:hover { background: #f6fbf9; }
+.region-directory .directory-head { padding: 0 22px; }
+.region-directory .directory-head > span { margin-left: auto; color: #94a09d; font-size: 11px; }
+.region-directory .directory-client { min-height: 68px; padding: 8px 10px; }
+.region-directory .directory-client-main { padding: 3px 0; cursor: pointer; }
+.region-directory .directory-client strong { font-size: 13px; }
+.region-directory .directory-client small { font-size: 11px; }
+
+/* Keep the brand asset tied to source files so each build emits the current logo. */
+.brand-mark { background-image: url('./assets/xinke-logo-transparent.png'); }
+
+/* Keep desktop content centered with a consistent 10% breathing margin on each side. */
+@media (min-width: 761px) {
+  .main { padding-left: 0; padding-right: 0; }
+  .main > * { width: 80%; max-width: none; }
+}
+
+.region-tree { padding: 10px 22px 22px; }
+.client-list-description { display: block; margin-top: 6px; color: #8b9996; font-size: 11px; }
+.region-filter-bar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; align-items: end; gap: 12px; padding: 16px 22px 4px; }
+.region-filter { display: grid; gap: 6px; min-width: 0; color: #5f746f; font-size: 11px; }
+.region-filter select { width: 100%; height: 38px; border: 1px solid #d8e4e1; border-radius: 5px; padding: 0 10px; color: #273b3a; background: #fff; outline: 0; font-size: 12px; }
+.region-filter select:focus { border-color: #86aaa4; }
+.region-filter-count { align-self: end; padding: 0 0 11px 2px; color: #7c918c; font-size: 11px; white-space: nowrap; }
+.region-directory > .region-client-grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); padding-top: 14px; }
+.region-directory > .region-client-grid .directory-client { min-height: 94px; display: block; padding: 8px 10px 5px; }
+.region-directory > .region-client-grid .directory-client-main { width: 100%; }
+.region-directory > .region-client-grid .directory-client small + small { color: #9aa8a4; }
+.region-tree-children { margin-left: 12px; padding-left: 12px; border-left: 1px solid #d9e8e4; }
+.directory-region-level, .directory-city-level, .directory-district-level, .directory-type-level { margin-top: 4px; }
+.region-tree .directory-group-head, .region-tree .directory-subgroup-head, .region-tree .directory-type-head { min-height: 34px; padding: 0 6px; gap: 7px; border-radius: 5px; }
+.region-tree .directory-group-head:hover, .region-tree .directory-subgroup-head:hover, .region-tree .directory-type-head:hover { background: #f1f8f5; }
+.region-tree .directory-group-head strong { color: #2f5751; font-size: 14px; }
+.region-tree .directory-subgroup-head strong { color: #53706a; font-size: 13px; }
+.region-tree .directory-type-head strong { color: #6b817c; font-size: 12px; font-weight: 600; }
+.region-tree .directory-group-head > span:last-child, .region-tree .directory-subgroup-head > span:last-child, .region-tree .directory-type-head > span:last-child { margin-left: auto; color: #97a5a2; font-size: 10px; }
+.region-type-children { padding-top: 2px; padding-bottom: 3px; }
+
+@media (max-width: 760px) {
+  .main > * { width: 100%; max-width: var(--content-max-width); }
+  .region-tree { padding: 8px 14px 16px; }
+  .region-filter-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px 14px 2px; gap: 10px; }
+  .region-filter-count { grid-column: 1 / -1; padding: 2px 0 4px; }
+  .region-client-grid { padding: 12px 14px 16px; }
+  .region-directory .directory-head { padding: 0 14px; }
+  .region-breadcrumb { font-size: 10px; }
+}

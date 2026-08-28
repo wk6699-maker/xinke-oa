@@ -1,0 +1,344 @@
+.dashboard-grid {
+  grid-template-columns: 1fr;
+}
+
+/* Keep the overview copy hidden; the client-list copy follows the directory. */
+.dashboard-grid > .dashboard-panel:first-child { display: none; }
+.clients-page {
+  display: flex;
+  flex-direction: column;
+}
+.clients-page > .page-toolbar { order: 1; }
+.clients-page > .region-directory { order: 3; }
+.latest-clients-panel { margin-top: 16px; margin-bottom: 16px; }
+.clients-page > .latest-clients-panel { order: 2; }
+
+.dashboard-panel {
+  overflow: hidden;
+}
+
+.dashboard-panel.is-collapsed > :not(.panel-head) {
+  display: none;
+}
+
+.dashboard-panel .panel-head {
+  min-height: 67px;
+}
+
+.dashboard-panel-body {
+  min-width: 0;
+}
+
+.dashboard-client-grid,
+.dashboard-reminder-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 14px;
+}
+
+.dashboard-client-card,
+.dashboard-reminder-card {
+  min-width: 0;
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e8efed;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.dashboard-client-card {
+  width: 100%;
+  color: #23383a;
+  text-align: left;
+}
+
+.dashboard-client-card:hover,
+.dashboard-reminder-card:hover {
+  border-color: #b9d5ce;
+  background: #f7fbfa;
+}
+
+.dashboard-client-card > svg {
+  flex: 0 0 auto;
+  color: #b4c4c0;
+}
+
+.dashboard-client-copy,
+.dashboard-reminder-card > div {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 3px;
+}
+
+.dashboard-client-copy strong,
+.dashboard-reminder-card strong {
+  overflow: hidden;
+  color: #243739;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-client-copy small,
+.dashboard-reminder-card small {
+  overflow: hidden;
+  color: #8b9996;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-reminder-card {
+  justify-content: space-between;
+}
+
+.dashboard-reminder-card b {
+  flex: 0 0 auto;
+  color: #c45e59;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.dashboard-pagination {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid #edf2f0;
+  color: #8b9996;
+  font-size: 11px;
+}
+
+.dashboard-pagination label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.dashboard-pagination select,
+.dashboard-pagination input {
+  height: 28px;
+  border: 1px solid #d8e4e1;
+  border-radius: 4px;
+  padding: 0 5px;
+  color: #52615f;
+  background: #fff;
+  font-size: 11px;
+}
+
+.dashboard-pagination select {
+  width: 52px;
+}
+
+.dashboard-pagination input {
+  width: 46px;
+  text-align: center;
+}
+
+.dashboard-pagination .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.dashboard-page-numbers {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.dashboard-page-numbers > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.dashboard-page-numbers button {
+  min-width: 27px;
+  height: 27px;
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #71817e;
+  background: transparent;
+  font-size: 11px;
+}
+
+.dashboard-page-numbers button:hover,
+.dashboard-page-numbers button.active {
+  border-color: #b9d5ce;
+  color: #1b6661;
+  background: #edf6f3;
+}
+
+.dashboard-page-numbers i {
+  padding: 0 2px;
+  color: #a1afac;
+  font-style: normal;
+}
+
+@media (max-width: 1100px) {
+  .dashboard-client-grid,
+  .dashboard-reminder-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .dashboard-client-grid,
+  .dashboard-reminder-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-pagination {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .dashboard-pagination > span {
+    margin-right: auto;
+  }
+
+  .dashboard-jump {
+    width: 100%;
+  }
+}
+
+/* The profit panel is rendered beside the dashboard data and ordered before reminders. */
+.main > .profit-analysis-panel { order: 3; margin-top: 18px; }
+.main > .dashboard-grid { order: 4; }
+
+.profit-analysis-panel .panel-head > svg {
+  margin-left: 14px;
+  flex: 0 0 auto;
+  color: #398277;
+}
+
+.profit-analysis-body { min-width: 0; }
+
+.profit-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 14px;
+  border-bottom: 1px solid #edf2f0;
+  background: #f8fbfa;
+}
+
+.profit-filter-bar label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: #657673;
+  font-size: 11px;
+}
+
+.profit-filter-bar input,
+.profit-filter-bar select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid #d8e4e1;
+  border-radius: 5px;
+  padding: 0 8px;
+  color: #2d4140;
+  background: #fff;
+  font-size: 12px;
+}
+
+.profit-filter-reset {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.profit-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 14px;
+  border: 1px solid #e5eeeb;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.profit-summary-grid > div {
+  min-width: 0;
+  padding: 12px 14px;
+  border-right: 1px solid #e5eeeb;
+  background: #fff;
+}
+
+.profit-summary-grid > div:last-child { border-right: 0; }
+.profit-summary-grid span,
+.profit-summary-grid strong { display: block; }
+.profit-summary-grid span { color: #8b9996; font-size: 11px; }
+.profit-summary-grid strong { margin-top: 6px; color: #223a39; font: 600 17px Space Grotesk, sans-serif; white-space: nowrap; }
+
+.profit-analysis-table {
+  margin: 0 14px 14px;
+  border: 1px solid #e5eeeb;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.profit-analysis-row {
+  display: grid;
+  grid-template-columns: .8fr .75fr 1.25fr 1fr repeat(4, .85fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #edf2f0;
+  color: #425451;
+  font-size: 11px;
+}
+
+.profit-analysis-row:last-child { border-bottom: 0; }
+.profit-analysis-head { min-height: 34px; color: #8b9996; background: #f7faf9; font-size: 10px; }
+.profit-analysis-row > span,
+.profit-analysis-row > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profit-analysis-row > strong { color: #2d4140; font-weight: 600; }
+
+/* Company expense statistics reuse the dashboard analysis surface with a six-column detail table. */
+.company-expense-analysis-panel { margin-top: 18px; }
+.company-expense-filter-bar { grid-template-columns: repeat(4, minmax(0, 1fr)) auto; }
+.company-expense-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.company-expense-analysis-row,
+.company-expense-analysis-table .profit-analysis-head { grid-template-columns: .9fr 1fr .9fr 1.2fr 1fr 1.8fr; }
+.company-expense-analysis-row > span:last-child { white-space: normal; line-height: 1.45; }
+
+@media (max-width: 1180px) {
+  .company-expense-filter-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 1180px) {
+  .profit-filter-bar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .profit-filter-reset { justify-self: start; }
+}
+
+@media (max-width: 760px) {
+  .main > .profit-analysis-panel { margin-top: 14px; }
+  .profit-filter-bar { grid-template-columns: 1fr; padding: 12px; }
+  .profit-filter-reset { justify-self: start; }
+  .profit-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 12px; }
+  .profit-summary-grid > div:nth-child(2) { border-right: 0; }
+  .profit-summary-grid > div:nth-child(-n + 2) { border-bottom: 1px solid #e5eeeb; }
+  .profit-summary-grid strong { font-size: 15px; }
+  .profit-analysis-table { margin: 0 12px 12px; }
+  .profit-analysis-head { display: none; }
+  .profit-analysis-row:not(.profit-analysis-head) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; padding: 11px 12px; }
+  .profit-analysis-row:not(.profit-analysis-head) > span,
+  .profit-analysis-row:not(.profit-analysis-head) > strong { display: grid; gap: 3px; overflow: visible; white-space: normal; }
+  .profit-analysis-row:not(.profit-analysis-head) > span::before,
+  .profit-analysis-row:not(.profit-analysis-head) > strong::before { content: attr(data-label); color: #8b9996; font-size: 10px; font-weight: 400; }
+  .company-expense-analysis-panel { margin-top: 14px; }
+  .company-expense-filter-bar { grid-template-columns: 1fr; }
+  .company-expense-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
