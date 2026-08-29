@@ -68,6 +68,10 @@ const pendingUploads = new Map();
 const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const STATE_MAX_BYTES = 5 * 1024 * 1024;
 
+function sessionCookie(token, maxAge = Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000)) {
+  return `xinke_session=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${maxAge}`;
+}
+
 function sendUnauthorized(res) {
   send(res, 401, { error: 'Authentication required' });
 }
@@ -103,7 +107,7 @@ function cleanExpiredSecurityState() {
   for (const [id, upload] of pendingUploads) if (upload.expiresAt <= now) pendingUploads.delete(id);
 }
 
-function currentSession(req) {
+function currentSession(req, res) {
   cleanExpiredSecurityState();
   const bearer = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   const cookieToken = String(req.headers.cookie || '').split(/;\s*/).find(value => value.startsWith('xinke_session='))?.slice('xinke_session='.length) || '';
@@ -111,6 +115,7 @@ function currentSession(req) {
   const session = token ? sessions.get(token) : undefined;
   if (!session) return null;
   session.lastActivity = Date.now();
+  if (res && !res.headersSent) res.setHeader('set-cookie', sessionCookie(token));
   return { token, ...session };
 }
 
@@ -450,14 +455,15 @@ function attachmentPermission(payload, userId, attachmentId) {
 }
 
 async function serveUpload(req, res, pathname) {
-  const session = currentSession(req);
+  const session = currentSession(req, res);
   if (!session) { sendUnauthorized(res); return; }
   if (req.method !== 'GET' && req.method !== 'HEAD') { send(res, 405, { error: 'Method not allowed' }); return; }
   let filename;
   try { filename = decodeURIComponent(pathname.slice('/uploads/'.length)); } catch { send(res, 400, { error: 'Invalid URL' }); return; }
   const filePath = uploadFilePath(filename);
   const state = await readState();
-  if (!attachmentPermission(state.payload, session.userId, filename)) { send(res, 403, { error: 'Forbidden' }); return; }
+  const pending = pendingUploads.get(filename);
+  if (!attachmentPermission(state.payload, session.userId, filename) && pending?.userId !== session.userId) { send(res, 403, { error: 'Forbidden' }); return; }
   if (!filePath || basename(filePath) !== filename || !existsSync(filePath)) { send(res, 404, { error: 'File not found' }); return; }
   try {
     const body = readFileSync(filePath);
@@ -566,7 +572,7 @@ const server = createServer((req, res) => {
         }
         const token = randomUUID();
         sessions.set(token, { userId: user.id, lastActivity: Date.now() });
-        sendWithHeaders(res, 200, { user: publicUser(user) }, { 'set-cookie': `xinke_session=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000)}` });
+        sendWithHeaders(res, 200, { user: publicUser(user) }, { 'set-cookie': sessionCookie(token) });
       } catch (error) {
         console.error('Login failed:', error?.message || error);
         send(res, 500, { error: 'Login unavailable' });
@@ -577,11 +583,11 @@ const server = createServer((req, res) => {
   if (pathname === '/api/auth/logout' && req.method === 'POST') {
     const session = currentSession(req);
     if (session) sessions.delete(session.token);
-    sendWithHeaders(res, 204, null, { 'set-cookie': 'xinke_session=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0' });
+    sendWithHeaders(res, 204, null, { 'set-cookie': sessionCookie('', 0) });
     return;
   }
   if (pathname === '/api/auth/me' && req.method === 'GET') {
-    const session = currentSession(req);
+    const session = currentSession(req, res);
     if (!session) { sendUnauthorized(res); return; }
     readState().then(state => {
       const { user } = permissionSet(state.payload, session.userId);
@@ -591,7 +597,7 @@ const server = createServer((req, res) => {
     return;
   }
   if (pathname === '/api/auth/password' && req.method === 'POST') {
-    const session = currentSession(req);
+    const session = currentSession(req, res);
     if (!session) { sendUnauthorized(res); return; }
     readJsonBody(req).then(async body => {
       try {
@@ -610,7 +616,7 @@ const server = createServer((req, res) => {
   }
   const resetPasswordMatch = pathname.match(/^\/api\/users\/([^/]+)\/reset-password$/);
   if (resetPasswordMatch && req.method === 'POST') {
-    const session = currentSession(req);
+    const session = currentSession(req, res);
     if (!session) { sendUnauthorized(res); return; }
     readJsonBody(req).then(async body => {
       try {
@@ -633,7 +639,7 @@ const server = createServer((req, res) => {
     return;
   }
   if (pathname === '/api/uploads' && req.method === 'POST') {
-    const session = currentSession(req);
+    const session = currentSession(req, res);
     if (!session) { sendUnauthorized(res); return; }
     readJsonBody(req, maxUploadBodyBytes).then(body => {
       try {
@@ -657,7 +663,7 @@ const server = createServer((req, res) => {
     return;
   }
   if (pathname.startsWith('/api/uploads/') && req.method === 'DELETE') {
-    const session = currentSession(req);
+    const session = currentSession(req, res);
     if (!session) { sendUnauthorized(res); return; }
     let filename;
     try { filename = decodeURIComponent(pathname.slice('/api/uploads/'.length)); } catch { send(res, 400, { error: 'Invalid URL' }); return; }
@@ -671,13 +677,13 @@ const server = createServer((req, res) => {
     return;
   }
   if (pathname === '/api/email/status' && req.method === 'GET') {
-    const session = currentSession(req);
+    const session = currentSession(req, res);
     if (!session) { sendUnauthorized(res); return; }
     send(res, 200, { configured: Boolean(smtpConfig.host && smtpConfig.user && smtpConfig.password && smtpConfig.from), provider: smtpConfig.host === 'smtp.qiye.aliyun.com' ? 'aliyun-enterprise' : 'custom', from: smtpConfig.from || null });
     return;
   }
   if (pathname === '/api/email/test' && req.method === 'POST') {
-    const session = currentSession(req);
+    const session = currentSession(req, res);
     if (!session) { sendUnauthorized(res); return; }
     const clientAddress = req.socket.remoteAddress || 'unknown';
     const nowMs = Date.now();
@@ -709,7 +715,7 @@ const server = createServer((req, res) => {
     return;
   }
   if (pathname === '/api/state' && req.method === 'GET') {
-    const session = currentSession(req);
+    const session = currentSession(req, res);
     if (!session) { sendUnauthorized(res); return; }
     readState().then(state => {
       if (!permissionSet(state.payload, session.userId).user) { sessions.delete(session.token); sendUnauthorized(res); return; }
@@ -728,7 +734,7 @@ const server = createServer((req, res) => {
     serveStatic(req, res);
     return;
   }
-  const session = currentSession(req);
+  const session = currentSession(req, res);
   if (!session) { sendUnauthorized(res); return; }
   readJsonBody(req, STATE_MAX_BYTES).then(body => {
     (async () => {

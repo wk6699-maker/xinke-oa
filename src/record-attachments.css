@@ -91,6 +91,24 @@
   color: #a07633;
 }
 
+.attachment-upload-status {
+  min-width: 150px;
+  display: grid;
+  gap: 4px;
+  color: #a07633;
+  font-size: 10px;
+}
+
+.attachment-upload-status progress {
+  width: 150px;
+  height: 6px;
+  accent-color: #1b6661;
+}
+
+.attachment-pending:has(.attachment-upload-status span:first-child) {
+  border-color: #d7e8e3;
+}
+
 .attachment-empty {
   display: block;
   padding: 6px 2px;

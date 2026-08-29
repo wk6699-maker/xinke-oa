@@ -27,7 +27,7 @@ type Client = {
   subgroupId?: string;
 };
 type Attachment = { id: string; name: string; mime: string; size: number; url: string };
-type PendingAttachment = { id: string; name: string; size: number; file: File; previewUrl: string };
+type PendingAttachment = { id: string; name: string; size: number; file: File; previewUrl: string; progress: number; status: 'uploading' | 'error'; error?: string; uploadedId?: string };
 type RecordItem = { id: string; docId: string; clientId: string; start: string; end: string; recordDate: string; fee: number; paid: number; paymentDate: string; method: string; feeType: string; employee?: string; projectName?: string; note: string; attachments?: Attachment[] };
 type PaymentItem = { id: string; docId: string; clientId: string; paymentDate: string; expectedPaymentDate?: string; method: string; amount: number; note: string; attachments?: Attachment[] };
 type CostItem = { id: string; docId: string; clientId: string; supplier?: string; reimburser?: string; costType?: string; feeTypes?: string[]; amount: number; note: string; createdAt: string; attachments?: Attachment[] };
@@ -58,7 +58,7 @@ function normalizeAttachments(value: unknown): Attachment[] {
     if (typeof item === 'string') {
       const name = item.split('/').pop() || `附件${index + 1}`;
       const id = item.split('/').pop() || `legacy-attachment-${index}`;
-      return [{ id, name, mime: '', size: 0, url: item.startsWith('/') ? item : `/uploads/${encodeURIComponent(id)}` }];
+      return [{ id, name, mime: '', size: 0, url: normalizeAttachmentUrl(item, id) }];
     }
     if (!item || typeof item !== 'object') return [];
     const source = item as Record<string, unknown>;
@@ -69,8 +69,19 @@ function normalizeAttachments(value: unknown): Attachment[] {
     const name = rawName || id;
     const rawUrl = String(source.url || '').trim();
     const size = Number(source.size);
-    return [{ id, name, mime: String(source.mime || source.type || ''), size: Number.isFinite(size) ? size : 0, url: rawUrl || `/uploads/${encodeURIComponent(id)}` }];
+    return [{ id, name, mime: String(source.mime || source.type || ''), size: Number.isFinite(size) ? size : 0, url: normalizeAttachmentUrl(rawUrl, id) }];
   });
+}
+
+function normalizeAttachmentUrl(rawUrl: string, id: string) {
+  if (rawUrl.startsWith('/uploads/')) return rawUrl;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.pathname.startsWith('/uploads/')) return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    // Invalid or legacy URLs fall back to the current site's upload route.
+  }
+  return `/uploads/${encodeURIComponent(id)}`;
 }
 
 const seedClients: Client[] = [
@@ -306,16 +317,36 @@ const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) 
   reader.onerror = () => reject(new Error('FILE_READ_FAILED'));
   reader.readAsDataURL(file);
 });
-const apiFetch = (input: RequestInfo | URL, init: RequestInit = {}) => fetch(input, { ...init, credentials: 'include' });
-const uploadAttachment = async (file: File): Promise<Attachment> => {
-  const response = await apiFetch('/api/uploads', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: file.name, mime: file.type, dataUrl: await readFileAsDataUrl(file) }),
+const dispatchAuthExpired = () => {
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('xinke-auth-expired'));
+};
+const apiFetch = (input: RequestInfo | URL, init: RequestInit = {}) => fetch(input, { ...init, credentials: 'include' }).then(response => {
+  if (response.status === 401) dispatchAuthExpired();
+  return response;
+});
+const uploadAttachment = async (file: File, onProgress?: (progress: number) => void): Promise<Attachment> => {
+  const dataUrl = await readFileAsDataUrl(file);
+  onProgress?.(5);
+  return await new Promise<Attachment>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('POST', '/api/uploads');
+    request.withCredentials = true;
+    request.setRequestHeader('content-type', 'application/json');
+    request.upload.onprogress = event => {
+      if (event.lengthComputable) onProgress?.(Math.min(99, Math.max(5, Math.round(event.loaded / event.total * 100))));
+    };
+    request.onerror = () => reject(new Error('UPLOAD_FAILED'));
+    request.onabort = () => reject(new Error('UPLOAD_ABORTED'));
+    request.onload = () => {
+      let result: { attachment?: Attachment; error?: string } = {};
+      try { result = JSON.parse(request.responseText || '{}'); } catch { /* handled by response check */ }
+      if (request.status === 401) dispatchAuthExpired();
+      if (request.status < 200 || request.status >= 300 || !result.attachment) { reject(new Error(request.status === 401 ? '登录已过期，请重新登录' : result.error || 'UPLOAD_FAILED')); return; }
+      onProgress?.(100);
+      resolve(result.attachment);
+    };
+    request.send(JSON.stringify({ name: file.name, mime: file.type, dataUrl }));
   });
-  const result = await response.json() as { attachment?: Attachment; error?: string };
-  if (!response.ok || !result.attachment) throw new Error(result.error || 'UPLOAD_FAILED');
-  return result.attachment;
 };
 const formatClientCreatedAt = (value: string) => {
   if (!value) return '未知';
@@ -355,7 +386,7 @@ function Modal({ title, onClose, children, className = '' }: { title: string; on
 }
 
 function AttachmentPanel({ note, inputRef, savedAttachments, pendingAttachments, onChange, onRemoveSaved, onRemovePending }: { note: string; inputRef: React.RefObject<HTMLInputElement | null>; savedAttachments: Attachment[]; pendingAttachments: PendingAttachment[]; onChange: (event: React.ChangeEvent<HTMLInputElement>) => void; onRemoveSaved: (attachment: Attachment) => void; onRemovePending: (id: string) => void }) {
-  return <div className="record-attachments full"><div className="record-attachments-head"><div><strong>附件</strong><small>{note}</small></div><button type="button" className="secondary-btn" onClick={() => inputRef.current?.click()}><Paperclip size={15} />添加附件</button><input ref={inputRef} type="file" hidden multiple accept={attachmentAccept} onChange={onChange} /></div><div className="attachment-list" aria-live="polite">{savedAttachments.map(attachment => <div className="attachment-item" key={attachment.id}><a href={attachment.url} target="_blank" rel="noreferrer" title={`在线预览 ${attachment.name}`}>{attachment.name}</a><span>{formatFileSize(attachment.size)}</span><button type="button" className="icon-btn danger" onClick={() => onRemoveSaved(attachment)} aria-label={`删除附件${attachment.name}`} title={`删除附件${attachment.name}`}><Trash2 size={14} /></button></div>)}{pendingAttachments.map(attachment => <div className="attachment-item attachment-pending" key={attachment.id}><a href={attachment.previewUrl} target="_blank" rel="noreferrer" title={`预览 ${attachment.name}`}>{attachment.name}</a><span>待上传 · {formatFileSize(attachment.size)}</span><button type="button" className="icon-btn danger" onClick={() => onRemovePending(attachment.id)} aria-label={`删除附件${attachment.name}`} title={`删除附件${attachment.name}`}><Trash2 size={14} /></button></div>)}{!savedAttachments.length && !pendingAttachments.length && <span className="attachment-empty">尚未添加凭证附件</span>}</div></div>;
+  return <div className="record-attachments full"><div className="record-attachments-head"><div><strong>附件</strong><small>{note}</small></div><button type="button" className="secondary-btn" onClick={() => inputRef.current?.click()}><Paperclip size={15} />添加附件</button><input ref={inputRef} type="file" hidden multiple accept={attachmentAccept} onChange={onChange} /></div><div className="attachment-list" aria-live="polite">{savedAttachments.map(attachment => <div className="attachment-item" key={attachment.id}><a href={attachment.url} target="_blank" rel="noreferrer" title={`在线预览 ${attachment.name}`}>{attachment.name}</a><span>{formatFileSize(attachment.size)}</span><button type="button" className="icon-btn danger" onClick={() => onRemoveSaved(attachment)} aria-label={`删除附件${attachment.name}`} title={`删除附件${attachment.name}`}><Trash2 size={14} /></button></div>)}{pendingAttachments.map(attachment => <div className="attachment-item attachment-pending" key={attachment.id}><a href={attachment.previewUrl} target="_blank" rel="noreferrer" title={`预览 ${attachment.name}`}>{attachment.name}</a><div className="attachment-upload-status"><span>{attachment.status === 'error' ? `上传失败：${attachment.error || '请移除后重试'}` : `正在上传 ${attachment.progress}%`} · {formatFileSize(attachment.size)}</span>{attachment.status === 'uploading' && <progress max="100" value={attachment.progress} aria-label={`上传${attachment.name}`} />}</div><button type="button" className="icon-btn danger" onClick={() => onRemovePending(attachment.id)} aria-label={`删除附件${attachment.name}`} title={`删除附件${attachment.name}`}><Trash2 size={14} /></button></div>)}{!savedAttachments.length && !pendingAttachments.length && <span className="attachment-empty">尚未添加凭证附件</span>}</div></div>;
 }
 
 function RegionManagerModal({ manager, items, regionCatalog, regionLevelLabels, regionName, editingRegionName, canManage, onClose, onParentChange, onNameChange, onEdit, onRemove, onSave }: { manager: { level: RegionLevel; province: string; city: string }; items: string[]; regionCatalog: RegionCatalog; regionLevelLabels: Record<RegionLevel, string>; regionName: string; editingRegionName: string | null; canManage: boolean; onClose: () => void; onParentChange: (field: 'province' | 'city', value: string) => void; onNameChange: (value: string) => void; onEdit: (name: string) => void; onRemove: (name: string) => void; onSave: () => void }) {
@@ -395,14 +426,23 @@ export default function App() {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() => readStored('auditLogs', []));
   const [users, setUsers] = useState<User[]>(() => readStored('users', seedUsers));
   const [serverHydrated, setServerHydrated] = useState(false);
+  const [serverSyncPulse, setServerSyncPulse] = useState(0);
   const serverVersion = useRef<number | null>(null);
   const serverSyncTimer = useRef<number | null>(null);
   const serverSyncInFlight = useRef(false);
+  const serverSyncQueued = useRef(false);
   const skipServerSync = useRef(false);
   const recordAttachmentInput = useRef<HTMLInputElement | null>(null);
+  const recordDateInput = useRef<HTMLInputElement | null>(null);
+  const recordPaymentDateInput = useRef<HTMLInputElement | null>(null);
   const paymentAttachmentInput = useRef<HTMLInputElement | null>(null);
   const costAttachmentInput = useRef<HTMLInputElement | null>(null);
   const dailyExpenseAttachmentInput = useRef<HTMLInputElement | null>(null);
+  const recordNewUploadIds = useRef<Set<string>>(new Set());
+  const paymentNewUploadIds = useRef<Set<string>>(new Set());
+  const costNewUploadIds = useRef<Set<string>>(new Set());
+  const dailyExpenseNewUploadIds = useRef<Set<string>>(new Set());
+  const attachmentUploadGeneration = useRef(0);
   const [active, setActive] = useState<'dashboard' | 'clients' | 'companyExpenses' | 'dailyExpenses' | 'users'>(navigation.active);
   const [clientsExpanded, setClientsExpanded] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<string[]>([]);
@@ -459,6 +499,15 @@ export default function App() {
   const [remindersPage, setRemindersPage] = useState(1);
   const [clientPageSize, setClientPageSize] = useState(10);
   const [clientPage, setClientPage] = useState(1);
+  const [detailFeePageSize, setDetailFeePageSize] = useState(10);
+  const [detailFeePage, setDetailFeePage] = useState(1);
+  const [detailPaymentPageSize, setDetailPaymentPageSize] = useState(10);
+  const [detailPaymentPage, setDetailPaymentPage] = useState(1);
+  const [detailCostPageSize, setDetailCostPageSize] = useState(10);
+  const [detailCostPage, setDetailCostPage] = useState(1);
+  const [detailInfoPageSize, setDetailInfoPageSize] = useState(10);
+  const [detailInfoPage, setDetailInfoPage] = useState(1);
+  const [arrearsCollapsed, setArrearsCollapsed] = useState(true);
   const [formClient, setFormClient] = useState({ name: '', company: '', phone: '', email: '', startDate: '', endDate: '', province: defaultProvince, city: defaultCity, district: defaultDistrict, customerTypeId: 'g1', groupId: 'g1', subgroupId: '' });
   const [groupName, setGroupName] = useState('');
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
@@ -572,6 +621,16 @@ export default function App() {
   const filteredSuppliers = sortTextValues(suppliers.filter(supplier => supplier.toLocaleLowerCase().includes(supplierSearch.trim().toLocaleLowerCase())));
   const costRecordKey = selectedRecords.map(record => record.docId).join('|');
   const selectedCustomerInfos = customerInfos.filter(info => info.clientId === selected?.id);
+  const selectedPayments = payments.filter(payment => payment.clientId === selected?.id);
+  const selectedCostRows = selectedCostRecords.flatMap(renderCostRows);
+  const detailFeePageCount = Math.max(1, Math.ceil(selectedRecords.length / detailFeePageSize));
+  const detailFeePageEntries = selectedRecords.slice((detailFeePage - 1) * detailFeePageSize, detailFeePage * detailFeePageSize);
+  const detailPaymentPageCount = Math.max(1, Math.ceil(selectedPayments.length / detailPaymentPageSize));
+  const detailPaymentPageEntries = selectedPayments.slice((detailPaymentPage - 1) * detailPaymentPageSize, detailPaymentPage * detailPaymentPageSize);
+  const detailCostPageCount = Math.max(1, Math.ceil(selectedCostRows.length / detailCostPageSize));
+  const detailCostPageEntries = selectedCostRows.slice((detailCostPage - 1) * detailCostPageSize, detailCostPage * detailCostPageSize);
+  const detailInfoPageCount = Math.max(1, Math.ceil(selectedCustomerInfos.length / detailInfoPageSize));
+  const detailInfoPageEntries = selectedCustomerInfos.slice((detailInfoPage - 1) * detailInfoPageSize, detailInfoPage * detailInfoPageSize);
   useEffect(() => { setCostRecordSelection(''); }, [selected?.id, costRecordKey]);
   function costAmountForRecord(docId: string) { return selectedCostItems.filter(cost => cost.docId === docId).reduce((sum, cost) => sum + cost.amount, 0); }
   const paidFor = (record: RecordItem) => record.paid + payments.filter(payment => payment.docId === record.docId).reduce((sum, payment) => sum + payment.amount, 0);
@@ -754,6 +813,16 @@ export default function App() {
   const logout = () => { void apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {}); setSession(null); };
 
   useEffect(() => {
+    const handleAuthExpired = () => {
+      attachmentUploadGeneration.current += 1;
+      setSession(null);
+      setAuthChecking(false);
+    };
+    window.addEventListener('xinke-auth-expired', handleAuthExpired);
+    return () => window.removeEventListener('xinke-auth-expired', handleAuthExpired);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     apiFetch('/api/auth/me', { headers: { accept: 'application/json' } }).then(async response => {
       if (!response.ok) throw new Error('unauthenticated');
@@ -801,7 +870,10 @@ export default function App() {
     }
     if (serverSyncTimer.current) window.clearTimeout(serverSyncTimer.current);
     serverSyncTimer.current = window.setTimeout(async () => {
-      if (serverSyncInFlight.current) return;
+      if (serverSyncInFlight.current) {
+        serverSyncQueued.current = true;
+        return;
+      }
       serverSyncInFlight.current = true;
       try {
         const response = await apiFetch('/api/state', {
@@ -821,7 +893,20 @@ export default function App() {
             const remoteIds = new Set((remoteItems || []).map(item => item.id));
             return [...localItems.filter(item => !remoteIds.has(item.id)), ...merged];
           };
-          const mergedPayload = { ...result.payload, records: mergeById(result.payload.records, records), payments: mergeById(result.payload.payments, payments) };
+          const mergedPayload = {
+            ...result.payload,
+            clients: mergeById(result.payload.clients, clients),
+            clientGroups: mergeById(result.payload.clientGroups, clientGroups),
+            clientSubgroups: mergeById(result.payload.clientSubgroups, clientSubgroups),
+            records: mergeById(result.payload.records, records),
+            payments: mergeById(result.payload.payments, payments),
+            costs: mergeById(result.payload.costs, costs),
+            dailyExpenses: mergeById(result.payload.dailyExpenses, dailyExpenses),
+            customerInfos: mergeById(result.payload.customerInfos, customerInfos),
+            permissionGroups: mergeById(result.payload.permissionGroups, permissionGroups),
+            auditLogs: mergeById(result.payload.auditLogs, auditLogs),
+            users: mergeById(result.payload.users, users),
+          };
           skipServerSync.current = false;
           applyServerData(mergedPayload);
           notify('检测到其他用户已更新数据，已合并本次回款修改');
@@ -832,10 +917,14 @@ export default function App() {
         // Local storage remains available while the API is offline.
       } finally {
         serverSyncInFlight.current = false;
+        if (serverSyncQueued.current) {
+          serverSyncQueued.current = false;
+          setServerSyncPulse(current => current + 1);
+        }
       }
     }, 450);
     return () => { if (serverSyncTimer.current) window.clearTimeout(serverSyncTimer.current); };
-  }, [serverHydrated, clients, clientGroups, clientSubgroups, records, payments, costs, dailyExpenses, customerInfos, permissionGroups, feeTypes, employees, costTypes, dailyExpenseTypes, reimbursers, suppliers, supplierDetails, emailSchedule, auditLogs, users, regionCatalog]);
+  }, [serverHydrated, serverSyncPulse, clients, clientGroups, clientSubgroups, records, payments, costs, dailyExpenses, customerInfos, permissionGroups, feeTypes, employees, costTypes, dailyExpenseTypes, reimbursers, suppliers, supplierDetails, emailSchedule, auditLogs, users, regionCatalog]);
 
   useEffect(() => {
     if (!serverHydrated) return;
@@ -905,7 +994,10 @@ export default function App() {
     }
     window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(currentUser));
     if (!window.localStorage.getItem(SESSION_ACTIVITY_STORAGE_KEY)) window.localStorage.setItem(SESSION_ACTIVITY_STORAGE_KEY, String(Date.now()));
-    if (currentUser !== session) setSession(currentUser);
+    // State hydration creates fresh user objects on every response. Compare the
+    // user data instead of object identity so hydration does not restart in a
+    // loop and prevent local edits from reaching the server.
+    if (JSON.stringify(currentUser) !== JSON.stringify(session)) setSession(currentUser);
   }, [session, users, serverHydrated]);
 
   useEffect(() => {
@@ -976,6 +1068,19 @@ export default function App() {
   useEffect(() => {
     setClientPage(current => Math.min(current, clientPageCount));
   }, [clientPageCount]);
+
+  useEffect(() => {
+    setDetailFeePage(1);
+    setDetailPaymentPage(1);
+    setDetailCostPage(1);
+    setDetailInfoPage(1);
+  }, [selected?.id]);
+
+  useEffect(() => { setDetailFeePage(current => Math.min(current, detailFeePageCount)); }, [detailFeePageCount]);
+  useEffect(() => { setDetailPaymentPage(current => Math.min(current, detailPaymentPageCount)); }, [detailPaymentPageCount]);
+  useEffect(() => { setDetailCostPage(1); }, [costRecordSelection]);
+  useEffect(() => { setDetailCostPage(current => Math.min(current, detailCostPageCount)); }, [detailCostPageCount]);
+  useEffect(() => { setDetailInfoPage(current => Math.min(current, detailInfoPageCount)); }, [detailInfoPageCount]);
 
   useEffect(() => {
     if ((recordTab === 'fee' && !canViewFee) || (recordTab === 'payment' && !canViewPayment) || (recordTab === 'info' && !canViewInfo)) setRecordTab(preferredRecordTab);
@@ -1108,16 +1213,16 @@ export default function App() {
     if (clientModal === 'new') {
       if (!canCreateClient) { notify('当前角色没有添加客户权限'); return; }
       const id = 'c' + Date.now();
-      setClients([{ id, ...nextClient, createdAt: new Date().toISOString() }, ...clients]);
+      setClients(current => [{ id, ...nextClient, createdAt: new Date().toISOString() }, ...current]);
       setSelectedId(id); recordAudit('create', '客户', `新增客户：${formClient.company}`, id); notify('客户已添加');
     } else if (clientModal) {
       if (!canEditClient) { notify('当前角色没有修改客户权限'); return; }
-      setClients(clients.map(c => c.id === clientModal.id ? { ...c, ...nextClient } : c));
+      setClients(current => current.map(c => c.id === clientModal.id ? { ...c, ...nextClient } : c));
       recordAudit('update', '客户', `修改客户：${formClient.company}`, clientModal.id); notify('客户资料已更新');
     }
     setClientModal(null);
   }
-  function addGroup() { if (!canManageClientGroups) { notify('当前角色没有分组管理权限'); return; } const name = groupName.trim(); if (!name || clientGroups.some(group => group.name === name)) return; const id = 'g' + Date.now(); setClientGroups([...clientGroups, { id, name }]); setGroupName(''); recordAudit('create', '客户分组', `新增分组：${name}`, id); notify('客户分组已添加'); }
+  function addGroup() { if (!canManageClientGroups) { notify('当前角色没有分组管理权限'); return; } const name = groupName.trim(); if (!name || clientGroups.some(group => group.name === name)) return; const id = 'g' + Date.now(); setClientGroups(current => current.some(group => group.name === name) ? current : [...current, { id, name }]); setGroupName(''); recordAudit('create', '客户分组', `新增分组：${name}`, id); notify('客户分组已添加'); }
   function saveGroupEdit() { if (!canManageClientGroups) { notify('当前角色没有分组管理权限'); return; } const name = groupName.trim(); if (!editingGroupId || !name || clientGroups.some(group => group.id !== editingGroupId && group.name === name)) return; setClientGroups(current => current.map(group => group.id === editingGroupId ? { ...group, name } : group)); setGroupName(''); recordAudit('update', '客户分组', `修改分组：${name}`, editingGroupId); setEditingGroupId(null); notify('客户分组已更新'); }
   function openGroupManager() { if (!canManageClientGroups) { notify('当前角色没有分组管理权限'); return; } setEditingGroupId(null); setGroupName(''); setGroupModalOpen(true); }
   function moveGroup(id: string, direction: -1 | 1) { if (!canManageClientGroups) return; setClientGroups(current => { const index = current.findIndex(group => group.id === id); const target = index + direction; if (index < 0 || target < 0 || target >= current.length) return current; const next = [...current]; [next[index], next[target]] = [next[target], next[index]]; return next; }); recordAudit('update', '客户分组', `调整分组排序：${clientGroups.find(group => group.id === id)?.name ?? id}`, id); }
@@ -1126,7 +1231,7 @@ export default function App() {
   function saveSubgroup() { if (!canManageClientGroups || !subgroupParentId) { notify('当前角色没有分组管理权限'); return; } const name = subgroupName.trim(); if (!name || clientSubgroups.some(subgroup => subgroup.groupId === subgroupParentId && subgroup.id !== editingSubgroupId && subgroup.name === name)) { notify('请输入不重复的二级分类名称'); return; } if (editingSubgroupId) { setClientSubgroups(current => current.map(subgroup => subgroup.id === editingSubgroupId ? { ...subgroup, name } : subgroup)); recordAudit('update', '客户二级分类', `修改二级分类：${name}`, editingSubgroupId); notify('二级分类已更新'); } else { const id = 'sg' + Date.now(); setClientSubgroups(current => [...current, { id, groupId: subgroupParentId, name }]); recordAudit('create', '客户二级分类', `新增二级分类：${name}`, id); notify('二级分类已添加'); } setSubgroupName(''); setSubgroupParentId(null); setEditingSubgroupId(null); }
   function moveSubgroup(id: string, direction: -1 | 1) { if (!canManageClientGroups) return; setClientSubgroups(current => { const item = current.find(subgroup => subgroup.id === id); if (!item) return current; const positions = current.map((subgroup, index) => subgroup.groupId === item.groupId ? index : -1).filter(index => index >= 0); const index = positions.findIndex(position => current[position].id === id); const target = index + direction; if (index < 0 || target < 0 || target >= positions.length) return current; const next = [...current]; [next[positions[index]], next[positions[target]]] = [next[positions[target]], next[positions[index]]]; return next; }); recordAudit('update', '客户二级分类', `调整二级分类排序：${clientSubgroups.find(item => item.id === id)?.name ?? id}`, id); }
   function removeSubgroup(subgroup: ClientSubgroup) { if (!canManageClientGroups) { notify('当前角色没有分组管理权限'); return; } if (clients.some(client => client.subgroupId === subgroup.id)) { notify('该二级分类有客户信息，不能删除'); return; } if (!confirm(`确定删除二级分类“${subgroup.name}”吗？`)) return; setClientSubgroups(current => current.filter(item => item.id !== subgroup.id)); if (editingSubgroupId === subgroup.id) { setSubgroupName(''); setSubgroupParentId(null); setEditingSubgroupId(null); } recordAudit('delete', '客户二级分类', `删除二级分类：${subgroup.name}`, subgroup.id); notify('二级分类已删除'); }
-  async function removeClient(id: string) { if (!canDeleteClient) { notify('当前角色没有删除客户权限'); return; } if (!confirm('确定删除该客户及其费用明细吗？')) return; const client = clients.find(item => item.id === id); const related = [...records.filter(r => r.clientId === id), ...payments.filter(p => p.clientId === id), ...costs.filter(c => c.clientId === id)]; const attachments = related.flatMap(item => item.attachments || []); setClients(clients.filter(c => c.id !== id)); setRecords(records.filter(r => r.clientId !== id)); setPayments(current => current.filter(payment => payment.clientId !== id)); setCosts(current => current.filter(cost => cost.clientId !== id)); setCustomerInfos(current => current.filter(info => info.clientId !== id)); setSelectedId(clients.find(c => c.id !== id)?.id ?? ''); const deletionResults = await Promise.all(attachments.map(attachment => apiFetch(`/api/uploads/${encodeURIComponent(attachment.id)}`, { method: 'DELETE' }).catch(() => null))); recordAudit('delete', '客户', `删除客户：${client?.company ?? id}`, id); notify(deletionResults.some(response => response && !response.ok && response.status !== 404) ? '客户已删除，但部分附件删除失败' : '客户已删除'); }
+  async function removeClient(id: string) { if (!canDeleteClient) { notify('当前角色没有删除客户权限'); return; } if (!confirm('确定删除该客户及其费用明细吗？')) return; const client = clients.find(item => item.id === id); const related = [...records.filter(r => r.clientId === id), ...payments.filter(p => p.clientId === id), ...costs.filter(c => c.clientId === id)]; const attachments = related.flatMap(item => item.attachments || []); setClients(current => current.filter(c => c.id !== id)); setRecords(current => current.filter(r => r.clientId !== id)); setPayments(current => current.filter(payment => payment.clientId !== id)); setCosts(current => current.filter(cost => cost.clientId !== id)); setCustomerInfos(current => current.filter(info => info.clientId !== id)); setSelectedId(current => current === id ? '' : current); const deletionResults = await Promise.all(attachments.map(attachment => apiFetch(`/api/uploads/${encodeURIComponent(attachment.id)}`, { method: 'DELETE' }).catch(() => null))); recordAudit('delete', '客户', `删除客户：${client?.company ?? id}`, id); notify(deletionResults.some(response => response && !response.ok && response.status !== 404) ? '客户已删除，但部分附件删除失败' : '客户已删除'); }
   const regionLevelLabels: Record<RegionLevel, string> = { province: '省份/直辖市', city: '地市', district: '区/县' };
   function openRegionManager(level: RegionLevel) {
     if (!canManageRegionLevel(level)) { notify(`当前角色没有${regionLevelLabels[level]}分类管理权限`); return; }
@@ -1214,8 +1319,10 @@ export default function App() {
     notify(`${regionLevelLabels[regionManager.level]}已删除`);
   }
   function openRecord(record: RecordItem | 'new') {
+    attachmentUploadGeneration.current += 1;
+    recordNewUploadIds.current.clear();
     if (record === 'new') {
-      setFormRecord({ start: selected?.startDate ?? '', end: selected?.endDate ?? '', recordDate: toLocalDateTimeInputValue().slice(0, 10), fee: '0', paid: '0', paymentDate: toLocalDateTimeInputValue().slice(0, 10), method: '', feeType: '', employee: '', projectName: '', note: '' });
+      setFormRecord({ start: selected?.startDate ?? '', end: selected?.endDate ?? '', recordDate: toLocalDateTimeInputValue().slice(0, 10), fee: '0', paid: '0', paymentDate: toLocalDateTimeInputValue().slice(0, 10), method: '未付款', feeType: feeTypes[0] || '', employee: employees[0] || '', projectName: '', note: '' });
       setSavedAttachments([]);
     } else {
       setFormRecord({ start: record.start, end: record.end, recordDate: record.recordDate || record.start, fee: String(record.fee), paid: String(record.paid), paymentDate: record.paymentDate, method: record.method, feeType: record.feeType || feeTypes[0] || '', employee: record.employee || employees[0] || '', projectName: record.projectName || '', note: record.note });
@@ -1226,7 +1333,10 @@ export default function App() {
     setRecordModal(record);
   }
   function closeRecordModal() {
+    attachmentUploadGeneration.current += 1;
     pendingAttachments.forEach(attachment => URL.revokeObjectURL(attachment.previewUrl));
+    void Promise.all([...recordNewUploadIds.current].map(id => apiFetch(`/api/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => null)));
+    recordNewUploadIds.current.clear();
     setPendingAttachments([]);
     setSavedAttachments([]);
     setAttachmentsToDelete([]);
@@ -1242,16 +1352,36 @@ export default function App() {
     if (oversized) { notify(`附件 ${oversized.name} 超过 100 MB，无法上传`); return []; }
     const totalSize = existingAttachments.reduce((total, attachment) => total + attachment.size, 0) + files.reduce((total, file) => total + file.size, 0);
     if (totalSize > MAX_ATTACHMENTS_TOTAL_SIZE) { notify('单条记录的附件总大小不能超过 200 MB'); return []; }
-    return files.map((file, index) => ({ id: `pending-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`, file, previewUrl: URL.createObjectURL(file), name: file.name, size: file.size }));
+    return files.map((file, index) => ({ id: `pending-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`, file, previewUrl: URL.createObjectURL(file), name: file.name, size: file.size, progress: 0, status: 'uploading' as const }));
+  }
+  function uploadSelectedAttachments(attachments: PendingAttachment[], setPending: React.Dispatch<React.SetStateAction<PendingAttachment[]>>, setSaved: React.Dispatch<React.SetStateAction<Attachment[]>>, newUploadIds: React.MutableRefObject<Set<string>>) {
+    const generation = attachmentUploadGeneration.current;
+    void Promise.all(attachments.map(async pending => {
+      try {
+        const uploaded = await uploadAttachment(pending.file, progress => setPending(current => current.map(item => item.id === pending.id ? { ...item, progress } : item)));
+        if (generation !== attachmentUploadGeneration.current) {
+          await apiFetch(`/api/uploads/${encodeURIComponent(uploaded.id)}`, { method: 'DELETE' }).catch(() => null);
+          URL.revokeObjectURL(pending.previewUrl);
+          return;
+        }
+        newUploadIds.current.add(uploaded.id);
+        URL.revokeObjectURL(pending.previewUrl);
+        setPending(current => current.filter(item => item.id !== pending.id));
+        setSaved(current => [...current, uploaded]);
+      } catch (error) {
+        setPending(current => current.map(item => item.id === pending.id ? { ...item, status: 'error', error: error instanceof Error ? error.message : '上传失败' } : item));
+      }
+    }));
   }
   function handleRecordAttachments(event: React.ChangeEvent<HTMLInputElement>) {
     const attachments = collectPendingAttachments(event, [...savedAttachments, ...pendingAttachments]);
-    if (attachments.length) setPendingAttachments(current => [...current, ...attachments]);
+    if (attachments.length) { setPendingAttachments(current => [...current, ...attachments]); uploadSelectedAttachments(attachments, setPendingAttachments, setSavedAttachments, recordNewUploadIds); }
   }
   function removePendingAttachment(id: string) {
     setPendingAttachments(current => {
       const removed = current.find(attachment => attachment.id === id);
       if (removed) URL.revokeObjectURL(removed.previewUrl);
+      if (removed?.uploadedId) void apiFetch(`/api/uploads/${encodeURIComponent(removed.uploadedId)}`, { method: 'DELETE' }).catch(() => null);
       return current.filter(attachment => attachment.id !== id);
     });
   }
@@ -1259,34 +1389,28 @@ export default function App() {
     setSavedAttachments(current => current.filter(item => item.id !== attachment.id));
     setAttachmentsToDelete(current => current.some(item => item.id === attachment.id) ? current : [...current, attachment]);
   }
-  async function uploadPendingAttachments(pending: PendingAttachment[]) {
-    const uploadedAttachments: Attachment[] = [];
-    try {
-      for (const attachment of pending) uploadedAttachments.push(await uploadAttachment(attachment.file));
-      return uploadedAttachments;
-    } catch (error) {
-      await Promise.all(uploadedAttachments.map(attachment => apiFetch(`/api/uploads/${encodeURIComponent(attachment.id)}`, { method: 'DELETE' }).catch(() => null)));
-      throw error;
-    }
-  }
   async function saveRecord() {
     const fee = Number(formRecord.fee) || 0, paid = Number(formRecord.paid) || 0;
-    const paymentDate = String(formRecord.paymentDate || '').trim();
-    if (!selected || !selected.startDate || !selected.endDate || !fee) return;
+    // Date inputs can update their DOM value before React receives the change event.
+    // Read the live values at submit time so edits are never lost.
+    const recordDate = String(recordDateInput.current ? recordDateInput.current.value : (formRecord.recordDate || '')).trim();
+    const paymentDate = String(recordPaymentDateInput.current ? recordPaymentDateInput.current.value : (formRecord.paymentDate || '')).trim();
+    if (!selected) { notify('请先选择客户'); return; }
+    if (!fee || fee <= 0) { notify('请输入大于 0 的费用金额'); return; }
+    if (!recordDate) { notify('请选择记录时间'); return; }
     if (!formRecord.employee) { notify('请选择业务经理'); return; }
     if (!formRecord.feeType) { notify('请选择费用类型'); return; }
     if (!formRecord.method) { notify('请选择支付方式'); return; }
-    if (!formRecord.note.trim()) { notify('请填写备注信息'); return; }
-    if (!savedAttachments.length && !pendingAttachments.length) { notify('请先添加至少一个附件作为费用凭证'); return; }
+    if (pendingAttachments.length) { notify('请等待附件上传完成'); return; }
+    if (!savedAttachments.length) { notify('请先添加至少一个附件作为费用凭证'); return; }
     setRecordSaving(true);
     try {
-      const uploadedAttachments = await uploadPendingAttachments(pendingAttachments);
-      const attachments = [...savedAttachments, ...uploadedAttachments];
-      const details = { start: selected.startDate, end: selected.endDate, recordDate: formRecord.recordDate, fee, paid, paymentDate, method: formRecord.method, feeType: formRecord.feeType, employee: formRecord.employee, projectName: formRecord.projectName.trim(), note: formRecord.note.trim(), attachments };
+      const attachments = [...savedAttachments];
+      const details = { start: selected.startDate || '', end: selected.endDate || '', recordDate, fee, paid, paymentDate, method: formRecord.method, feeType: formRecord.feeType, employee: formRecord.employee, projectName: formRecord.projectName.trim(), note: formRecord.note.trim(), attachments };
       if (recordModal === 'new') {
         const id = 'r' + Date.now();
-        const docId = makeDocId(formRecord.recordDate, records);
-        setRecords([{ id, docId, clientId: selected.id, ...details }, ...records]);
+        const docId = makeDocId(recordDate, records);
+        setRecords(current => [{ id, docId, clientId: selected.id, ...details }, ...current]);
         recordAudit('create', '费用明细', `新增费用明细：${selected.company}，单据ID ${docId}，${money(fee)}`, id);
         notify('费用明细已添加');
       } else if (recordModal) {
@@ -1296,6 +1420,7 @@ export default function App() {
       }
       const deletionResults = await Promise.all(attachmentsToDelete.map(attachment => apiFetch(`/api/uploads/${encodeURIComponent(attachment.id)}`, { method: 'DELETE' }).catch(() => null)));
       if (deletionResults.some(response => response && !response.ok && response.status !== 404)) notify('费用明细已保存，但部分旧附件删除失败');
+      recordNewUploadIds.current.clear();
       closeRecordModal();
     } catch {
       notify('附件上传失败，请检查文件后重试');
@@ -1304,6 +1429,8 @@ export default function App() {
     }
   }
   function openPaymentModal(docId?: string) {
+    attachmentUploadGeneration.current += 1;
+    paymentNewUploadIds.current.clear();
     setEditingPaymentId(null);
     const unpaidRecord = docId ? selectedRecords.find(record => record.docId === docId && record.fee > paidFor(record)) : selectedRecords.find(record => record.fee > paidFor(record));
     setFormPayment({ docId: unpaidRecord?.docId ?? '', paymentDate: toLocalDateTimeInputValue().slice(0, 10), expectedPaymentDate: unpaidRecord?.paymentDate ?? '', method: '', amount: '', note: '' });
@@ -1313,6 +1440,8 @@ export default function App() {
     setPaymentModal(true);
   }
   function openPaymentEdit(payment: PaymentItem) {
+    attachmentUploadGeneration.current += 1;
+    paymentNewUploadIds.current.clear();
     setEditingPaymentId(payment.id);
     const linkedRecord = selectedRecords.find(record => record.docId === payment.docId);
     setFormPayment({ docId: payment.docId, paymentDate: payment.paymentDate, expectedPaymentDate: payment.expectedPaymentDate || linkedRecord?.paymentDate || '', method: payment.method, amount: String(payment.amount), note: payment.note });
@@ -1322,7 +1451,10 @@ export default function App() {
     setPaymentModal(true);
   }
   function closePaymentModal() {
+    attachmentUploadGeneration.current += 1;
     pendingPaymentAttachments.forEach(attachment => URL.revokeObjectURL(attachment.previewUrl));
+    void Promise.all([...paymentNewUploadIds.current].map(id => apiFetch(`/api/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => null)));
+    paymentNewUploadIds.current.clear();
     setPendingPaymentAttachments([]);
     setSavedPaymentAttachments([]);
     setPaymentAttachmentsToDelete([]);
@@ -1331,12 +1463,13 @@ export default function App() {
   }
   function handlePaymentAttachments(event: React.ChangeEvent<HTMLInputElement>) {
     const attachments = collectPendingAttachments(event, [...savedPaymentAttachments, ...pendingPaymentAttachments]);
-    if (attachments.length) setPendingPaymentAttachments(current => [...current, ...attachments]);
+    if (attachments.length) { setPendingPaymentAttachments(current => [...current, ...attachments]); uploadSelectedAttachments(attachments, setPendingPaymentAttachments, setSavedPaymentAttachments, paymentNewUploadIds); }
   }
   function removePendingPaymentAttachment(id: string) {
     setPendingPaymentAttachments(current => {
       const removed = current.find(attachment => attachment.id === id);
       if (removed) URL.revokeObjectURL(removed.previewUrl);
+      if (removed?.uploadedId) void apiFetch(`/api/uploads/${encodeURIComponent(removed.uploadedId)}`, { method: 'DELETE' }).catch(() => null);
       return current.filter(attachment => attachment.id !== id);
     });
   }
@@ -1349,32 +1482,41 @@ export default function App() {
     const amount = Number(formPayment.amount) || 0;
     const missing: string[] = [];
     if (!record) { notify('请选择欠款单据'); return; }
+    const clientId = selected?.id;
+    const clientCompany = selected?.company ?? '';
+    if (!clientId) { notify('请先选择客户'); return; }
     if (!formPayment.paymentDate) missing.push('收款时间');
     if (!formPayment.expectedPaymentDate) missing.push('预计支付时间');
     if (!formPayment.method) missing.push('收款方式');
     if (!amount) missing.push('收款金额');
     if (!formPayment.note.trim()) missing.push('备注信息');
     if (missing.length) { notify(`请填写：${missing.join('、')}`); return; }
-    if (!savedPaymentAttachments.length && !pendingPaymentAttachments.length) { notify('请先添加至少一个附件作为回款凭证'); return; }
+    if (pendingPaymentAttachments.length) { notify('请等待附件上传完成'); return; }
+    if (!savedPaymentAttachments.length) { notify('请先添加至少一个附件作为回款凭证'); return; }
     const editingPayment = editingPaymentId ? payments.find(payment => payment.id === editingPaymentId) : undefined;
     const remaining = record.fee - (paidFor(record) - (editingPayment?.docId === record.docId ? editingPayment.amount : 0));
     if (amount > remaining) { notify(`回款金额不能超过欠款 ${money(remaining)}`); return; }
     setPaymentSaving(true);
     try {
-      const uploadedAttachments = await uploadPendingAttachments(pendingPaymentAttachments);
-      const attachments = [...savedPaymentAttachments, ...uploadedAttachments];
+      const attachments = [...savedPaymentAttachments];
       setRecords(current => current.map(item => item.docId === formPayment.docId ? { ...item, paymentDate: formPayment.expectedPaymentDate } : item));
       if (editingPaymentId) {
         setPayments(current => current.map(payment => payment.id === editingPaymentId ? { ...payment, ...formPayment, note: formPayment.note.trim(), amount, attachments } : payment));
-        recordAudit('update', '回款明细', `修改回款：${selected?.company ?? ''}，单据ID ${formPayment.docId}，${money(amount)}`, editingPaymentId);
+        recordAudit('update', '回款明细', `修改回款：${clientCompany}，单据ID ${formPayment.docId}，${money(amount)}`, editingPaymentId);
         notify('回款明细已更新');
       } else {
         const id = 'p' + Date.now();
-        setPayments(current => [{ ...formPayment, id, clientId: selected!.id, docId: record.docId, note: formPayment.note.trim(), amount, attachments }, ...current]);
-        recordAudit('create', '回款明细', `新增回款：${selected?.company ?? ''}，单据ID ${formPayment.docId}，${money(amount)}`, id);
+        setPayments(current => [{ ...formPayment, id, clientId, docId: record.docId, note: formPayment.note.trim(), amount, attachments }, ...current]);
+        recordAudit('create', '回款明细', `新增回款：${clientCompany}，单据ID ${formPayment.docId}，${money(amount)}`, id);
         notify('回款已添加');
       }
       await Promise.all(paymentAttachmentsToDelete.map(attachment => apiFetch(`/api/uploads/${encodeURIComponent(attachment.id)}`, { method: 'DELETE' }).catch(() => null)));
+      // Keep the current customer visible and show the newly-created payment immediately.
+      // The state sync effect persists the same update to the local API afterwards.
+      setSelectedId(clientId);
+      setActive('clients');
+      setRecordTab('payment');
+      paymentNewUploadIds.current.clear();
       closePaymentModal();
     } catch {
       notify('附件上传失败，请检查文件后重试');
@@ -1391,6 +1533,8 @@ export default function App() {
     notify(deletionResults.some(response => response && !response.ok && response.status !== 404) ? '回款明细已删除，但部分附件删除失败' : '回款明细已删除');
   }
   function openCostModal(cost: CostItem | 'new', docId?: string) {
+    attachmentUploadGeneration.current += 1;
+    costNewUploadIds.current.clear();
     setSupplierSearch('');
     if (cost === 'new') {
       setFormCost({ docId: docId ?? selectedCostRecords[0]?.docId ?? selectedRecords[0]?.docId ?? '', supplier: suppliers[0] ?? '', reimburser: reimbursers[0] ?? '', costType: costTypes[0] ?? '', amount: '', note: '', createdAt: toLocalDateTimeInputValue().slice(0, 10) });
@@ -1405,7 +1549,10 @@ export default function App() {
     setCostModal(cost);
   }
   function closeCostModal() {
+    attachmentUploadGeneration.current += 1;
     pendingCostAttachments.forEach(attachment => URL.revokeObjectURL(attachment.previewUrl));
+    void Promise.all([...costNewUploadIds.current].map(id => apiFetch(`/api/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => null)));
+    costNewUploadIds.current.clear();
     setPendingCostAttachments([]);
     setSavedCostAttachments([]);
     setCostAttachmentsToDelete([]);
@@ -1413,12 +1560,13 @@ export default function App() {
   }
   function handleCostAttachments(event: React.ChangeEvent<HTMLInputElement>) {
     const attachments = collectPendingAttachments(event, [...savedCostAttachments, ...pendingCostAttachments]);
-    if (attachments.length) setPendingCostAttachments(current => [...current, ...attachments]);
+    if (attachments.length) { setPendingCostAttachments(current => [...current, ...attachments]); uploadSelectedAttachments(attachments, setPendingCostAttachments, setSavedCostAttachments, costNewUploadIds); }
   }
   function removePendingCostAttachment(id: string) {
     setPendingCostAttachments(current => {
       const removed = current.find(attachment => attachment.id === id);
       if (removed) URL.revokeObjectURL(removed.previewUrl);
+      if (removed?.uploadedId) void apiFetch(`/api/uploads/${encodeURIComponent(removed.uploadedId)}`, { method: 'DELETE' }).catch(() => null);
       return current.filter(attachment => attachment.id !== id);
     });
   }
@@ -1430,11 +1578,11 @@ export default function App() {
     const amount = Number(formCost.amount) || 0;
     const record = selectedRecords.find(item => item.docId === formCost.docId);
     if (!selected || !record || !formCost.supplier || !formCost.reimburser || !formCost.costType || amount <= 0 || !formCost.note.trim()) { notify('请选择费用单据、供应商、报销人、费用类型并完整填写成本和备注'); return; }
-    if (!savedCostAttachments.length && !pendingCostAttachments.length) { notify('请先添加至少一个附件作为成本凭证'); return; }
+    if (pendingCostAttachments.length) { notify('请等待附件上传完成'); return; }
+    if (!savedCostAttachments.length) { notify('请先添加至少一个附件作为成本凭证'); return; }
     setCostSaving(true);
     try {
-      const uploadedAttachments = await uploadPendingAttachments(pendingCostAttachments);
-      const attachments = [...savedCostAttachments, ...uploadedAttachments];
+      const attachments = [...savedCostAttachments];
       const createdAt = new Date(formCost.createdAt);
       const details = { docId: record.docId, clientId: selected.id, supplier: formCost.supplier, reimburser: formCost.reimburser, costType: formCost.costType, amount, note: formCost.note.trim(), createdAt: Number.isNaN(createdAt.getTime()) ? new Date().toISOString() : createdAt.toISOString(), attachments };
       if (costModal === 'new') {
@@ -1448,6 +1596,7 @@ export default function App() {
         notify('成本明细已更新');
       }
       await Promise.all(costAttachmentsToDelete.map(attachment => apiFetch(`/api/uploads/${encodeURIComponent(attachment.id)}`, { method: 'DELETE' }).catch(() => null)));
+      costNewUploadIds.current.clear();
       closeCostModal();
     } catch {
       notify('附件上传失败，请检查文件后重试');
@@ -1465,6 +1614,8 @@ export default function App() {
     notify(deletionResults.some(response => response && !response.ok && response.status !== 404) ? '成本明细已删除，但部分附件删除失败' : '成本明细已删除');
   }
   function openDailyExpenseModal(expense: DailyExpense | 'new') {
+    attachmentUploadGeneration.current += 1;
+    dailyExpenseNewUploadIds.current.clear();
     if (expense === 'new' ? !canCreateDailyExpense : !canEditDailyExpense) {
       notify(expense === 'new' ? '当前角色没有添加日常费用权限' : '当前角色没有修改日常费用权限');
       return;
@@ -1481,15 +1632,18 @@ export default function App() {
     setDailyExpenseModal(expense);
   }
   function closeDailyExpenseModal() {
+    attachmentUploadGeneration.current += 1;
     pendingDailyExpenseAttachments.forEach(attachment => URL.revokeObjectURL(attachment.previewUrl));
+    void Promise.all([...dailyExpenseNewUploadIds.current].map(id => apiFetch(`/api/uploads/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => null)));
+    dailyExpenseNewUploadIds.current.clear();
     setPendingDailyExpenseAttachments([]); setSavedDailyExpenseAttachments([]); setDailyExpenseAttachmentsToDelete([]); setDailyExpenseModal(null);
   }
   function handleDailyExpenseAttachments(event: React.ChangeEvent<HTMLInputElement>) {
     const attachments = collectPendingAttachments(event, [...savedDailyExpenseAttachments, ...pendingDailyExpenseAttachments]);
-    if (attachments.length) setPendingDailyExpenseAttachments(current => [...current, ...attachments]);
+    if (attachments.length) { setPendingDailyExpenseAttachments(current => [...current, ...attachments]); uploadSelectedAttachments(attachments, setPendingDailyExpenseAttachments, setSavedDailyExpenseAttachments, dailyExpenseNewUploadIds); }
   }
   function removePendingDailyExpenseAttachment(id: string) {
-    setPendingDailyExpenseAttachments(current => { const removed = current.find(item => item.id === id); if (removed) URL.revokeObjectURL(removed.previewUrl); return current.filter(item => item.id !== id); });
+    setPendingDailyExpenseAttachments(current => { const removed = current.find(item => item.id === id); if (removed) URL.revokeObjectURL(removed.previewUrl); if (removed?.uploadedId) void apiFetch(`/api/uploads/${encodeURIComponent(removed.uploadedId)}`, { method: 'DELETE' }).catch(() => null); return current.filter(item => item.id !== id); });
   }
   function removeSavedDailyExpenseAttachment(attachment: Attachment) {
     setSavedDailyExpenseAttachments(current => current.filter(item => item.id !== attachment.id));
@@ -1501,12 +1655,15 @@ export default function App() {
       return;
     }
     const amount = Number(formDailyExpense.amount) || 0;
-    if (!formDailyExpense.recordDate || !formDailyExpense.expenseType || !formDailyExpense.reimburser || amount <= 0 || !formDailyExpense.note.trim()) { notify('请完整填写日常费用信息'); return; }
-    if (!savedDailyExpenseAttachments.length && !pendingDailyExpenseAttachments.length) { notify('请先添加至少一个附件作为费用凭证'); return; }
+    if (!formDailyExpense.recordDate) { notify('请选择费用日期'); return; }
+    if (!formDailyExpense.expenseType) { notify('请选择费用类型'); return; }
+    if (!formDailyExpense.reimburser) { notify('请选择报销人'); return; }
+    if (amount <= 0) { notify('请输入大于 0 的费用金额'); return; }
+    if (pendingDailyExpenseAttachments.length) { notify('请等待附件上传完成'); return; }
+    if (!savedDailyExpenseAttachments.length) { notify('请先添加至少一个附件作为费用凭证'); return; }
     setDailyExpenseSaving(true);
     try {
-      const uploadedAttachments = await uploadPendingAttachments(pendingDailyExpenseAttachments);
-      const attachments = [...savedDailyExpenseAttachments, ...uploadedAttachments];
+      const attachments = [...savedDailyExpenseAttachments];
       const details = { recordDate: formDailyExpense.recordDate, expenseType: formDailyExpense.expenseType, reimburser: formDailyExpense.reimburser, amount, note: formDailyExpense.note.trim(), attachments };
       if (dailyExpenseModal === 'new') {
         const id = 'de' + Date.now(); const docId = makeDailyExpenseDocId(formDailyExpense.recordDate, dailyExpenses);
@@ -1515,6 +1672,7 @@ export default function App() {
         setDailyExpenses(current => current.map(item => item.id === dailyExpenseModal.id ? { ...item, ...details } : item)); recordAudit('update', '日常费用', `修改日常费用：${dailyExpenseModal.docId}，${money(amount)}`, dailyExpenseModal.id); notify('日常费用已更新');
       }
       await Promise.all(dailyExpenseAttachmentsToDelete.map(attachment => apiFetch(`/api/uploads/${encodeURIComponent(attachment.id)}`, { method: 'DELETE' }).catch(() => null)));
+      dailyExpenseNewUploadIds.current.clear();
       closeDailyExpenseModal();
     } catch { notify('附件上传失败，请检查文件后重试'); } finally { setDailyExpenseSaving(false); }
   }
@@ -1595,7 +1753,7 @@ export default function App() {
     if (!confirm('确定删除这条费用明细吗？')) return;
     const relatedCosts = record?.docId ? costs.filter(cost => cost.docId === record.docId) : [];
     const relatedPayments = record?.docId ? payments.filter(payment => payment.docId === record.docId) : [];
-    setRecords(records.filter(r => r.id !== id));
+    setRecords(current => current.filter(r => r.id !== id));
     if (record?.docId) setCosts(current => current.filter(cost => cost.docId !== record.docId));
     if (record?.docId) setPayments(current => current.filter(payment => payment.docId !== record.docId));
     const attachments = [...(record?.attachments || []), ...relatedCosts.flatMap(cost => cost.attachments || []), ...relatedPayments.flatMap(payment => payment.attachments || [])];
@@ -1608,7 +1766,7 @@ export default function App() {
     const name = feeTypeName.trim();
     if (!name || feeTypes.includes(name)) return;
     const id = `fee-type-${Date.now()}`;
-    setFeeTypes([...feeTypes, name]); setFeeTypeName('');
+    setFeeTypes(current => current.includes(name) ? current : [...current, name]); setFeeTypeName('');
     recordAudit('create', '费用类型', `新增费用类型：${name}`, id);
     notify('费用类型已添加');
   }
@@ -1832,6 +1990,13 @@ export default function App() {
     setUsers(current => current.map(item => item.id === user.id ? { ...item, status: nextStatus } : item));
     recordAudit('update', '成员', `${nextStatus === '正常' ? '启用' : '停用'}成员：${user.name}`, user.id);
   }
+  function removeUser(user: User) {
+    if (session?.role !== '管理员' || user.id === session.id) return;
+    if (!confirm(`确定删除成员“${user.name}”吗？`)) return;
+    setUsers(current => current.filter(item => item.id !== user.id));
+    recordAudit('delete', '成员', `删除成员：${user.name}（${user.username || '未设置用户名'}）`, user.id);
+    notify('成员已删除');
+  }
   function renderClientGroup(group: ClientGroup) {
     const groupClients = filteredClients.filter(client => client.groupId === group.id);
     const subgroups = clientSubgroups.filter(subgroup => subgroup.groupId === group.id);
@@ -1955,7 +2120,7 @@ export default function App() {
       {profitAnalysisRows.length > 0 && renderDashboardPagination({ total: profitAnalysisRows.length, page: profitAnalysisPage, pageSize: profitAnalysisPageSize, pageCount: profitAnalysisPageCount, onPageChange: setProfitAnalysisPage, onPageSizeChange: setProfitAnalysisPageSize })}
     </div>
   </section>;
-  const renderCostRows = (record: RecordItem) => {
+  function renderCostRows(record: RecordItem) {
     const recordCosts = selectedCostItems.filter(cost => cost.docId === record.docId);
     const rows: Array<CostItem | null> = recordCosts.length ? recordCosts : [null];
     return rows.map((cost, index) => {
@@ -1963,7 +2128,7 @@ export default function App() {
       const profit = record.fee - amount;
       return <div className="record-grid cost-grid cost-record-row" key={cost?.id || `${record.docId}-empty`}><div><strong>{record.docId}</strong>{recordCosts.length > 1 && <small>第 {index + 1} 笔成本</small>}</div><span>{record.feeType || '未设置'}</span><span>{cost?.reimburser || '未设置'}</span><strong>{money(record.fee)}</strong><strong className={cost ? 'red' : 'cost-empty-value'}>{cost ? money(amount) : '暂无成本记录'}</strong><strong className={profit >= 0 ? 'green' : 'red'}>{money(profit)}</strong><span className="cost-note-cell">{cost?.note || '暂无备注'}</span><div className="record-actions">{cost && <><button className="icon-btn" onClick={() => openCostModal(cost)} disabled={!canEditCost} aria-label={`修改${record.docId}第${index + 1}笔成本费用`} title="修改成本费用"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeCost(cost.id)} disabled={!canDeleteCost} aria-label={`删除${record.docId}第${index + 1}笔成本费用`} title="删除成本费用"><Trash2 size={15} /></button></>}{index === 0 ? <button className="icon-btn" onClick={() => openCostModal('new', record.docId)} disabled={!canCreateCost} aria-label={`为${record.docId}添加成本费用`} title="添加成本费用"><Plus size={15} /></button> : <span className="cost-action-placeholder" aria-hidden="true" />}</div></div>;
     });
-  };
+  }
 
      return <div className="app-shell"><aside className="app-sidebar"><div className="sidebar-brand"><div className="brand-mark"><CircleDollarSign size={20} /></div><div><strong>OA帮</strong><span>费用客户管理系统</span></div></div><nav>{canViewDashboard && <button className={active === 'dashboard' ? 'nav-item active' : 'nav-item'} onClick={() => setActive('dashboard')}><LayoutDashboard size={17} />总览</button>}{canViewClients && <div className="nav-group"><button className={active === 'clients' ? 'nav-item active' : 'nav-item'} onClick={() => { const alreadyOnClients = active === 'clients'; setActive('clients'); setClientsExpanded(current => alreadyOnClients ? !current : false); }} aria-expanded={clientsExpanded}><Users size={17} />客户列表</button>{clientsExpanded && <div className="sub-nav">{clientGroups.map(renderClientGroup)}{!filteredClients.length && <div className="sub-empty">暂无客户</div>}</div>}</div>}<div className="nav-group"><button className={active === 'companyExpenses' || active === 'dailyExpenses' ? 'nav-item active' : 'nav-item'} onClick={() => { setActive('companyExpenses'); setCompanyExpensesExpanded(current => !current); }} aria-expanded={companyExpensesExpanded}><Banknote size={17} />公司费用管理</button><div className="sub-nav"><button className={'sub-nav-item ' + (active === 'dailyExpenses' ? 'active' : '')} onClick={() => { setActive('dailyExpenses'); setCompanyExpensesExpanded(true); }}>日常费用管理</button></div></div>{canViewUsers && <button className={active === 'users' ? 'nav-item active' : 'nav-item'} onClick={() => setActive('users')}><Settings size={17} />权限管理</button>}</nav><div className="sidebar-bottom"><div className="profile"><div className="avatar">{session.name.slice(0, 1)}</div><div><strong>{session.name}</strong><span>{session.role}</span></div></div><button className="logout" onClick={() => setSession(null)}><LogOut size={16} />退出登录</button></div></aside><main className="main"><header className="topbar"><button className="mobile-menu icon-btn" aria-label="菜单"><Menu size={19} /></button><div><p className="eyebrow">{active === 'dashboard' ? 'OVERVIEW' : active === 'clients' ? 'CLIENTS' : active === 'companyExpenses' ? 'COMPANY EXPENSES' : active === 'dailyExpenses' ? 'DAILY EXPENSES' : 'ACCESS CONTROL'}</p><h2>{active === 'dashboard' ? '业务总览' : active === 'clients' ? '客户列表' : active === 'companyExpenses' ? '公司费用管理' : active === 'dailyExpenses' ? '日常费用管理' : '权限管理'}</h2></div><div className="top-actions"><span className="today"><CalendarDays size={15} />2026年8月21日</span><div className="account-menu" onMouseEnter={handleAccountMenuEnter} onMouseLeave={handleAccountMenuLeave}><button className="top-avatar" onClick={toggleAccountMenu} aria-label="账户菜单" aria-expanded={accountMenuOpen}>{session.name.slice(0, 1)}</button>{accountMenuOpen && <div className="account-menu-popover"><div className="account-menu-user"><strong>{session.username || session.name}</strong><span>{session.role}</span></div><div className="account-menu-divider" /><button onClick={() => { setNewPassword(''); setConfirmPassword(''); closeAccountMenu(); setPasswordModal(true); }}><ShieldCheck size={16} />修改密码</button><button className="account-menu-logout" onClick={() => { closeAccountMenu(); setSession(null); }}><LogOut size={16} />退出登录</button></div>}</div></div></header>
       {active === 'dashboard' && <><section className="welcome"><div><p className="eyebrow">GOOD MORNING, {session.name.toUpperCase()}</p><h1>今天也把账目理清楚。</h1><p>客户服务周期和回款状态都在这里。</p></div><div className="welcome-rate"><span>本月回款率</span><strong>{totals.total ? Math.round(totals.paid / totals.total * 100) : 0}%</strong><div className="welcome-rate-bar"><span style={{ width: `${totals.total ? totals.paid / totals.total * 100 : 0}%` }} /></div></div></section><section className="kpi-grid"><div className="kpi"><span>客户总数</span><strong>{clients.length}</strong><small>活跃合作客户</small><Users size={20} /></div><div className="kpi"><span>应收总额</span><strong>{money(totals.total)}</strong><small>所有维护服务周期</small><CircleDollarSign size={20} /></div><div className="kpi"><span>已收款</span><strong className="green">{money(totals.paid)}</strong><small>累计已支付金额</small><Check size={20} /></div><div className="kpi"><span>待收款</span><strong className="red">{money(totals.total - totals.paid)}</strong><small>需要跟进的余额</small><Banknote size={20} /></div></section><section className="dashboard-grid"><div className={'panel dashboard-panel ' + (recentClientsCollapsed ? 'is-collapsed' : '')}><div className="panel-head"><button className="panel-collapse-head" onClick={() => setRecentClientsCollapsed(current => !current)} aria-expanded={!recentClientsCollapsed}><div><h3>最近客户</h3><span>按增加时间倒序 · 最近 {latestClients.length} / {clients.length} 位</span></div><ChevronDown size={17} /></button><button className="text-btn" onClick={() => setActive('clients')}>查看全部 <ChevronRight size={15} /></button></div><div className="dashboard-panel-body"><div className="dashboard-client-grid">{recentClientsPageEntries.map(c => <button className="dashboard-client-card" key={c.id} onClick={() => { setSelectedId(c.id); setActive('clients'); }}><span className="client-avatar">{c.name.slice(0, 1)}</span><span className="dashboard-client-copy"><strong>{c.company}</strong><small>{c.name} · {c.phone}</small><small>增加时间 {formatClientCreatedAt(c.createdAt)}</small></span><ChevronRight size={16} /></button>)}{!latestClients.length && <div className="empty">暂无客户记录</div>}</div>{renderDashboardPagination({ total: latestClients.length, page: recentClientsPage, pageSize: recentClientsPageSize, pageCount: recentClientsPageCount, onPageChange: setRecentClientsPage, onPageSizeChange: setRecentClientsPageSize })}</div></div><div className={'panel dashboard-panel ' + (remindersCollapsed ? 'is-collapsed' : '')}><div className="panel-head"><button className="panel-collapse-head" onClick={() => setRemindersCollapsed(current => !current)} aria-expanded={!remindersCollapsed}><div><h3>收款提醒</h3><span>所有客户预计支付时间 10 天内或已过期 · 共 {reminderRecords.length} 条</span></div><ChevronDown size={17} /></button><Banknote size={18} /></div><div className="dashboard-panel-body"><div className="dashboard-reminder-grid">{remindersPageEntries.map(r => { const c = clients.find(x => x.id === r.clientId); return <div className="dashboard-reminder-card" key={r.id}><div><strong>{c?.company ?? '未知客户'}</strong><small>{c?.name || '未设置客户'} · {r.feeType || '费用记录'}</small><small>预计支付 {r.paymentDate || '待定'}</small></div><b>{money(r.fee - paidFor(r))}</b></div>; })}{!reminderRecords.length && <div className="empty">暂无收款提醒</div>}</div>{renderDashboardPagination({ total: reminderRecords.length, page: remindersPage, pageSize: remindersPageSize, pageCount: remindersPageCount, onPageChange: setRemindersPage, onPageSizeChange: setRemindersPageSize })}</div></div></section></>}
@@ -1985,55 +2150,55 @@ export default function App() {
           {visibleRecordTab === 'fee' ? <>
              <div className="record-head"><div className="record-heading record-heading-stack"><div className="record-tabs"><button className="active" onClick={() => setRecordTab('fee')}>费用明细</button><button onClick={() => setRecordTab('payment')}>回款明细</button>{canViewCost && <button onClick={() => setRecordTab('cost')}>成本明细</button>}<button onClick={() => setRecordTab('info')}>运维资料</button></div><span>可多次添加，按记录时间管理</span></div><div className="toolbar-actions"><button className="secondary-btn small" onClick={() => { setEditingEmployee(null); setEmployeeName(''); setEmployeeModalOpen(true); }} disabled={!canManageEmployees}><Settings size={15} />业务经理管理</button><button className="secondary-btn small" onClick={() => { setEditingFeeType(null); setFeeTypeName(''); setFeeTypeModalOpen(true); }} disabled={!canManageFeeTypes}><Settings size={15} />费用类型</button><button className="primary-btn small" onClick={() => openRecord('new')} disabled={!canCreateFee}><Plus size={16} />增加费用</button></div></div>
             <div className="record-summary"><div><span>总费用</span><strong>{money(selectedRecords.reduce((s, r) => s + r.fee, 0))}</strong></div><div><span>已支付</span><strong className="green">{money(selectedRecords.reduce((s, r) => s + paidFor(r), 0))}</strong></div><div><span>未支付</span><strong className="red">{money(selectedRecords.reduce((s, r) => s + r.fee - paidFor(r), 0))}</strong></div></div>
-             <div className="records-table"><div className="record-grid fee-record-grid record-grid-head"><span>单据ID</span><span>记录时间</span><span>费用类型</span><span>业务经理</span><span>费用</span><span>已支付</span><span>未支付</span><span>支付信息</span><span>预计支付时间</span><span /></div>{selectedRecords.map(r => <div className="record-grid fee-record-grid" key={r.id}><div><strong>{r.docId || r.id}</strong><small>{[r.projectName && `项目：${r.projectName}`, r.note || '无备注'].filter(Boolean).join(' · ')}</small></div><div><strong>{r.recordDate || r.start}</strong></div><span>{r.feeType || '维护费'}</span><span>{r.employee || '未设置'}</span><strong>{money(r.fee)}</strong><strong className="green">{money(paidFor(r))}</strong><strong className={r.fee - paidFor(r) ? 'red' : 'green'}>{money(r.fee - paidFor(r))}</strong><div><span>{r.method || '未设置'}</span></div><span>{r.paymentDate || '待定'}</span><div className="record-actions"><button className="icon-btn" onClick={() => openRecord(r)} disabled={!canEditFee} aria-label="编辑费用明细" title="编辑费用明细"><Edit3 size={15} /></button><button className="icon-btn payment-action" onClick={() => r.fee > paidFor(r) ? openPaymentModal(r.docId) : notify('该单据已结清')} disabled={!canEditFeePayment} aria-label="添加回款" title={r.fee > paidFor(r) ? '添加回款' : '该单据已结清'}><Banknote size={15} /></button><button className="icon-btn danger" onClick={() => removeRecord(r.id)} disabled={!canDeleteFee} aria-label="删除费用明细" title="删除费用明细"><Trash2 size={15} /></button></div></div>)}{!selectedRecords.length && <div className="empty">暂无费用明细</div>}</div>
+             <div className="records-table"><div className="record-grid fee-record-grid record-grid-head"><span>单据ID</span><span>记录时间</span><span>费用类型</span><span>业务经理</span><span>费用</span><span>已支付</span><span>未支付</span><span>支付信息</span><span>预计支付时间</span><span /></div>{detailFeePageEntries.map(r => <div className="record-grid fee-record-grid" key={r.id}><div><strong>{r.docId || r.id}</strong><small>{[r.projectName && `项目：${r.projectName}`, r.note || '无备注'].filter(Boolean).join(' · ')}</small></div><div><strong>{r.recordDate || r.start}</strong></div><span>{r.feeType || '维护费'}</span><span>{r.employee || '未设置'}</span><strong>{money(r.fee)}</strong><strong className="green">{money(paidFor(r))}</strong><strong className={r.fee - paidFor(r) ? 'red' : 'green'}>{money(r.fee - paidFor(r))}</strong><div><span>{r.method || '未设置'}</span></div><span>{r.paymentDate || '待定'}</span><div className="record-actions"><button className="icon-btn" onClick={() => openRecord(r)} disabled={!canEditFee} aria-label="编辑费用明细" title="编辑费用明细"><Edit3 size={15} /></button><button className="icon-btn payment-action" onClick={() => r.fee > paidFor(r) ? openPaymentModal(r.docId) : notify('该单据已结清')} disabled={!canEditFeePayment} aria-label="添加回款" title={r.fee > paidFor(r) ? '添加回款' : '该单据已结清'}><Banknote size={15} /></button><button className="icon-btn danger" onClick={() => removeRecord(r.id)} disabled={!canDeleteFee} aria-label="删除费用明细" title="删除费用明细"><Trash2 size={15} /></button></div></div>)}{!selectedRecords.length && <div className="empty">暂无费用明细</div>}</div>{selectedRecords.length > 0 && renderDashboardPagination({ total: selectedRecords.length, page: detailFeePage, pageSize: detailFeePageSize, pageCount: detailFeePageCount, onPageChange: setDetailFeePage, onPageSizeChange: setDetailFeePageSize })}
            </> : visibleRecordTab === 'payment' ? <div className="arrears-page">
               <div className="record-head"><div className="record-heading record-heading-stack"><div className="record-tabs"><button onClick={() => setRecordTab('fee')}>费用明细</button><button className="active" onClick={() => setRecordTab('payment')}>回款明细</button>{canViewCost && <button onClick={() => setRecordTab('cost')}>成本明细</button>}<button onClick={() => setRecordTab('info')}>运维资料</button></div><span>查看当前客户的回款单据与明细</span></div><div className="toolbar-actions"><button className="primary-btn small" onClick={() => openPaymentModal()} disabled={!canCreatePayment || !selectedRecords.some(r => r.fee > paidFor(r))}><Plus size={16} />添加回款</button></div></div>
-            <div className="records-table"><div className="record-grid record-grid-head"><span>欠款单据ID</span><span>费用类型</span><span>应收金额</span><span>已收金额</span><span>剩余欠款</span><span>预计支付时间</span></div>{selectedRecords.filter(r => r.fee > paidFor(r)).map(r => <div className="record-grid" key={r.id}><strong>{r.docId}</strong><span>{r.feeType}</span><strong>{money(r.fee)}</strong><strong className="green">{money(paidFor(r))}</strong><strong className="red">{money(r.fee - paidFor(r))}</strong><span>{r.paymentDate || '待定'}</span></div>)}{!selectedRecords.some(r => r.fee > paidFor(r)) && <div className="empty">暂无欠款单据</div>}</div>
+            <section className={'arrears-section ' + (arrearsCollapsed ? 'is-collapsed' : '')}><button type="button" className="arrears-section-head" onClick={() => setArrearsCollapsed(current => !current)} aria-expanded={!arrearsCollapsed}><span><strong>欠款单据</strong><small>查看当前客户未结清的回款单据</small></span><ChevronDown size={17} /></button>{!arrearsCollapsed && <div className="records-table"><div className="record-grid record-grid-head"><span>欠款单据ID</span><span>费用类型</span><span>应收金额</span><span>已收金额</span><span>剩余欠款</span><span>预计支付时间</span></div>{selectedRecords.filter(r => r.fee > paidFor(r)).map(r => <div className="record-grid" key={r.id}><strong>{r.docId}</strong><span>{r.feeType}</span><strong>{money(r.fee)}</strong><strong className="green">{money(paidFor(r))}</strong><strong className="red">{money(r.fee - paidFor(r))}</strong><span>{r.paymentDate || '待定'}</span></div>)}{!selectedRecords.some(r => r.fee > paidFor(r)) && <div className="empty">暂无欠款单据</div>}</div>}</section>
             <div className="record-head"><div><h3>回款明细</h3><span>记录客户回款单据与明细</span></div></div>
-             <div className="records-table"><div className="record-grid record-grid-head"><span>单据ID</span><span>收款时间</span><span>收款方式</span><span>收款金额</span><span>备注信息</span><span>操作</span></div>{payments.filter(p => p.clientId === selected.id).map(p => <div className="record-grid" key={p.id}><strong>{p.docId}</strong><span>{p.paymentDate}</span><span>{p.method}</span><strong className="green">{money(p.amount)}</strong><span>{p.note || '无备注'}</span><div className="record-actions"><button className="icon-btn" onClick={() => openPaymentEdit(p)} disabled={!canEditPaymentRecord} aria-label="修改回款" title="修改回款"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removePayment(p.id)} disabled={!canDeletePayment} aria-label="删除回款" title="删除回款"><Trash2 size={15} /></button></div></div>)}{!payments.some(p => p.clientId === selected.id) && <div className="empty">暂无回款明细</div>}</div>
+             <div className="records-table"><div className="record-grid record-grid-head"><span>单据ID</span><span>收款时间</span><span>收款方式</span><span>收款金额</span><span>备注信息</span><span>操作</span></div>{detailPaymentPageEntries.map(p => <div className="record-grid" key={p.id}><strong>{p.docId}</strong><span>{p.paymentDate}</span><span>{p.method}</span><strong className="green">{money(p.amount)}</strong><span>{p.note || '无备注'}</span><div className="record-actions"><button className="icon-btn" onClick={() => openPaymentEdit(p)} disabled={!canEditPaymentRecord} aria-label="修改回款" title="修改回款"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removePayment(p.id)} disabled={!canDeletePayment} aria-label="删除回款" title="删除回款"><Trash2 size={15} /></button></div></div>)}{!selectedPayments.length && <div className="empty">暂无回款明细</div>}</div>{selectedPayments.length > 0 && renderDashboardPagination({ total: selectedPayments.length, page: detailPaymentPage, pageSize: detailPaymentPageSize, pageCount: detailPaymentPageCount, onPageChange: setDetailPaymentPage, onPageSizeChange: setDetailPaymentPageSize })}
            </div> : visibleRecordTab === 'cost' ? <div className="cost-page">
                <div className="record-head"><div className="record-heading record-heading-stack"><div className="record-tabs"><button onClick={() => setRecordTab('fee')}>费用明细</button><button onClick={() => setRecordTab('payment')}>回款明细</button><button className="active" onClick={() => setRecordTab('cost')}>成本明细</button><button onClick={() => setRecordTab('info')}>运维资料</button></div><span>关联费用单据，记录成本并自动计算利润</span></div><div className="toolbar-actions"><button className="secondary-btn small" onClick={() => { setEditingReimburser(null); setReimburserName(''); setReimburserManagerScope('cost'); setReimburserManagerOpen(true); }} disabled={!canManageCostReimbursers}><Settings size={15} />报销人</button><button className="secondary-btn small" onClick={() => { setEditingSupplier(null); setSupplierName(''); setSupplierModalOpen(true); }} disabled={!canManageCostSuppliers}><Settings size={15} />供应商管理</button><button className="secondary-btn small" onClick={() => { setEditingCostType(null); setCostTypeName(''); setCostTypeModalOpen(true); }} disabled={!canManageCostTypes}><Settings size={15} />费用类型</button><button className="primary-btn small" onClick={() => openCostModal('new', selectedCostRecords[0]?.docId)} disabled={!canCreateCost || !selectedCostRecords.length}><Plus size={16} />添加成本</button></div></div>
                <div className="cost-record-selector"><div className="cost-record-selector-head"><div><strong>关联费用</strong><span>默认关联当前客户全部费用，可按单据筛选成本和利润</span></div><select className="cost-record-select" value={costRecordSelection} onChange={event => setCostRecordSelection(event.target.value)} disabled={!selectedRecords.length}><option value="">全部费用</option>{selectedRecords.map(record => <option key={record.docId} value={record.docId}>{record.docId} · {record.feeType || '费用明细'} · {money(record.fee)}</option>)}</select></div>{!selectedRecords.length && <div className="empty">暂无可关联费用单据</div>}</div>
                <div className="record-summary"><div><span>关联费用</span><strong>{money(selectedCostRecords.reduce((sum, record) => sum + record.fee, 0))}</strong></div><div><span>总成本</span><strong className="red">{money(selectedCostItems.reduce((sum, cost) => sum + cost.amount, 0))}</strong></div><div><span>总利润</span><strong className="green">{money(selectedCostRecords.reduce((sum, record) => sum + record.fee, 0) - selectedCostItems.reduce((sum, cost) => sum + cost.amount, 0))}</strong></div></div>
-               <div className="records-table cost-records-table"><div className="record-grid cost-grid record-grid-head"><span>费用单据ID</span><span>费用类型</span><span>报销人</span><span>关联费用</span><span>成本费用</span><span>利润</span><span>备注</span><span>操作</span></div>{selectedCostRecords.flatMap(renderCostRows)}{!selectedCostRecords.length && <div className="empty">请至少选择一张费用单据</div>}</div>
+               <div className="records-table cost-records-table"><div className="record-grid cost-grid record-grid-head"><span>费用单据ID</span><span>费用类型</span><span>报销人</span><span>关联费用</span><span>成本费用</span><span>利润</span><span>备注</span><span>操作</span></div>{detailCostPageEntries}{!selectedCostRecords.length && <div className="empty">请至少选择一张费用单据</div>}</div>{selectedCostRows.length > 0 && renderDashboardPagination({ total: selectedCostRows.length, page: detailCostPage, pageSize: detailCostPageSize, pageCount: detailCostPageCount, onPageChange: setDetailCostPage, onPageSizeChange: setDetailCostPageSize })}
            </div> : <div className="customer-info-page">
               <div className="record-head"><div className="record-heading record-heading-stack"><div className="record-tabs"><button onClick={() => setRecordTab('fee')}>费用明细</button><button onClick={() => setRecordTab('payment')}>回款明细</button>{canViewCost && <button onClick={() => setRecordTab('cost')}>成本明细</button>}<button className="active" onClick={() => setRecordTab('info')}>运维资料</button></div><span>记录当前客户的运维资料</span></div><div className="toolbar-actions"><button className="primary-btn small" onClick={openCustomerInfoModal} disabled={!canCreateInfo}><Plus size={16} />添加运维资料</button></div></div>
-              <div className="customer-info-list"><div className="customer-info-row customer-info-head"><span>名称</span><span>备注</span><span>操作</span></div>{selectedCustomerInfos.map(info => <div className="customer-info-row" key={info.id}><strong>{info.name}</strong><span>{info.note || '无备注'}</span><div className="record-actions"><button className="icon-btn" onClick={() => openCustomerInfoEdit(info)} disabled={!canEditInfoRecord} aria-label={`编辑${info.name}`} title="编辑运维资料"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeCustomerInfo(info.id)} disabled={!canDeleteInfo} aria-label={`删除${info.name}`} title="删除运维资料"><Trash2 size={15} /></button></div></div>)}{!selectedCustomerInfos.length && <div className="empty">暂无运维资料</div>}</div>
+              <div className="customer-info-list"><div className="customer-info-row customer-info-head"><span>名称</span><span>备注</span><span>操作</span></div>{detailInfoPageEntries.map(info => <div className="customer-info-row" key={info.id}><strong>{info.name}</strong><span>{info.note || '无备注'}</span><div className="record-actions"><button className="icon-btn" onClick={() => openCustomerInfoEdit(info)} disabled={!canEditInfoRecord} aria-label={`编辑${info.name}`} title="编辑运维资料"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeCustomerInfo(info.id)} disabled={!canDeleteInfo} aria-label={`删除${info.name}`} title="删除运维资料"><Trash2 size={15} /></button></div></div>)}{!selectedCustomerInfos.length && <div className="empty">暂无运维资料</div>}</div>{selectedCustomerInfos.length > 0 && renderDashboardPagination({ total: selectedCustomerInfos.length, page: detailInfoPage, pageSize: detailInfoPageSize, pageCount: detailInfoPageCount, onPageChange: setDetailInfoPage, onPageSizeChange: setDetailInfoPageSize })}
            </div>}
         </div>}
     {regionManager && <RegionManagerModal manager={regionManager} items={managedRegionItems} regionCatalog={regionCatalog} regionLevelLabels={regionLevelLabels} regionName={regionName} editingRegionName={editingRegionName} canManage={canManageRegionLevel(regionManager.level)} onClose={() => { setRegionManager(null); setRegionName(''); setEditingRegionName(null); }} onParentChange={updateRegionManagerParent} onNameChange={setRegionName} onEdit={name => { setEditingRegionName(name); setRegionName(name); }} onRemove={removeRegionCategory} onSave={saveRegionCategory} />}
       </section>}
-       {active === 'users' && <section className={'users-page panel ' + (usersSectionCollapsed ? 'is-collapsed' : '')}><div className="panel-head"><button className="panel-collapse-head" onClick={() => setUsersSectionCollapsed(current => !current)} aria-expanded={!usersSectionCollapsed}><div><h3>团队成员</h3><span>管理登录权限与角色范围</span></div><ChevronDown size={17} /></button><div className="toolbar-actions"><button className="secondary-btn" onClick={() => { setEditingPermissionGroupId(null); setPermissionGroupName(''); setPermissionGroupPermissions(allPermissions.map(item => item.key)); setPermissionGroupModal(true); }} disabled={session.role !== '管理员'}><Settings size={16} />角色权限</button><button className="primary-btn" onClick={() => { setFormUser({ name: '', username: '', email: '', phone: '', password: '', role: '财务' }); setUserModal('new'); }} disabled={session.role !== '管理员'}><Plus size={17} />添加成员</button></div></div><div className="permission-note"><ShieldCheck size={18} /><div><strong>角色权限说明</strong><span>角色直接关联后台板块和客户详情标签权限。新成员首次登录需设置密码，管理员可重置其他成员密码。</span></div></div><div className="users-table"><div className="user-grid user-head user-grid-with-group"><span>姓名</span><span>用户名</span><span>邮箱</span><span>手机号</span><span>角色</span><span>状态</span><span>操作</span></div>{sortedUsers.map(u => <div className="user-grid user-grid-with-group" key={u.id}><div className="user-cell"><div className="client-avatar">{u.name.slice(0, 1)}</div><strong>{u.name}</strong></div><span>{u.username || '未设置'}</span><span>{u.email}</span><span>{u.phone || '未设置'}</span><span className="role-badge">{u.role}</span><span className="status-badge">{u.status}</span><div className="record-actions"><button className="icon-btn" onClick={() => openUserEdit(u)} disabled={session.role !== '管理员'} aria-label={`编辑${u.name}`} title="编辑成员"><Edit3 size={15} /></button><button className="icon-btn" onClick={() => resetUserPassword(u)} disabled={u.id === session.id || session.role !== '管理员'} aria-label={`重置${u.name}密码`} title="重置密码"><ShieldCheck size={15} /></button><button className="text-btn" disabled={u.id === session.id || session.role !== '管理员'} onClick={() => toggleUserStatus(u)}>{u.status === '正常' ? '停用' : '启用'}</button></div></div>)}</div></section>}
+       {active === 'users' && <section className={'users-page panel ' + (usersSectionCollapsed ? 'is-collapsed' : '')}><div className="panel-head"><button className="panel-collapse-head" onClick={() => setUsersSectionCollapsed(current => !current)} aria-expanded={!usersSectionCollapsed}><div><h3>团队成员</h3><span>管理登录权限与角色范围</span></div><ChevronDown size={17} /></button><div className="toolbar-actions"><button className="secondary-btn" onClick={() => { setEditingPermissionGroupId(null); setPermissionGroupName(''); setPermissionGroupPermissions(allPermissions.map(item => item.key)); setPermissionGroupModal(true); }} disabled={session.role !== '管理员'}><Settings size={16} />角色权限</button><button className="primary-btn" onClick={() => { setFormUser({ name: '', username: '', email: '', phone: '', password: '', role: '财务' }); setUserModal('new'); }} disabled={session.role !== '管理员'}><Plus size={17} />添加成员</button></div></div><div className="permission-note"><ShieldCheck size={18} /><div><strong>角色权限说明</strong><span>角色直接关联后台板块和客户详情标签权限。新成员首次登录需设置密码，管理员可重置其他成员密码。</span></div></div><div className="users-table"><div className="user-grid user-head user-grid-with-group"><span>姓名</span><span>用户名</span><span>邮箱</span><span>手机号</span><span>角色</span><span>状态</span><span>操作</span></div>{sortedUsers.map(u => <div className="user-grid user-grid-with-group" key={u.id}><div className="user-cell"><div className="client-avatar">{u.name.slice(0, 1)}</div><strong>{u.name}</strong></div><span>{u.username || '未设置'}</span><span>{u.email}</span><span>{u.phone || '未设置'}</span><span className="role-badge">{u.role}</span><span className="status-badge">{u.status}</span><div className="record-actions"><button className="icon-btn" onClick={() => openUserEdit(u)} disabled={session.role !== '管理员'} aria-label={`编辑${u.name}`} title="编辑成员"><Edit3 size={15} /></button><button className="icon-btn" onClick={() => resetUserPassword(u)} disabled={u.id === session.id || session.role !== '管理员'} aria-label={`重置${u.name}密码`} title="重置密码"><ShieldCheck size={15} /></button><button className="text-btn" disabled={u.id === session.id || session.role !== '管理员'} onClick={() => toggleUserStatus(u)}>{u.status === '正常' ? '停用' : '启用'}</button><button className="icon-btn danger" disabled={u.id === session.id || session.role !== '管理员'} onClick={() => removeUser(u)} aria-label={`删除${u.name}`} title="删除成员"><Trash2 size={15} /></button></div></div>)}</div></section>}
       {active === 'users' && <section className={'email-schedule panel ' + (emailScheduleCollapsed ? 'is-collapsed' : '')}><div className="panel-head"><button className="panel-collapse-head" onClick={() => setEmailScheduleCollapsed(current => !current)} aria-expanded={!emailScheduleCollapsed}><div><h3>定时邮件发送</h3><span>将总览中的未付款收款提醒发送到指定邮箱</span></div><ChevronDown size={17} /></button><Mail size={18} /></div><div className="email-schedule-form"><label className="password-change-option"><span>启用定时发送</span><input type="checkbox" checked={emailSchedule.enabled} onChange={event => setEmailSchedule(current => ({ ...current, enabled: event.target.checked }))} disabled={session.role !== '管理员'} /><i /></label><label>发送频率<select value={emailSchedule.frequency} onChange={event => setEmailSchedule(current => ({ ...current, frequency: event.target.value as EmailFrequency }))} disabled={session.role !== '管理员'}><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>{emailSchedule.frequency === 'weekly' && <label>每周发送日<select value={emailSchedule.weekDay ?? 1} onChange={event => setEmailSchedule(current => ({ ...current, weekDay: Number(event.target.value) }))} disabled={session.role !== '管理员'}>{weekDayOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>}{emailSchedule.frequency === 'monthly' && <label>每月发送日<select value={emailSchedule.monthDay ?? 1} onChange={event => setEmailSchedule(current => ({ ...current, monthDay: Number(event.target.value) }))} disabled={session.role !== '管理员'}>{monthDayOptions.map(day => <option key={day} value={day}>{day}号</option>)}</select></label>}<label>发送时间<input type="time" value={emailSchedule.sendTime} onChange={event => setEmailSchedule(current => ({ ...current, sendTime: event.target.value }))} disabled={session.role !== '管理员'} /></label><label className="full">收件邮箱<input value={emailRecipientsInput} onChange={event => setEmailRecipientsInput(event.target.value)} disabled={session.role !== '管理员'} placeholder="多个邮箱用逗号、分号或空格分隔" /></label></div><div className="email-schedule-actions"><button className="secondary-btn" onClick={saveEmailSchedule} disabled={session.role !== '管理员'}><Check size={15} />保存设置</button><button className="primary-btn" onClick={openReminderDraft} disabled={session.role !== '管理员'}><Mail size={15} />测试发送</button></div><div className="permission-note"><Mail size={18} /><div><strong>{emailSchedule.enabled ? '定时发送已启用' : '定时发送未启用'}</strong><span>{emailServiceStatus.configured ? `服务器SMTP已配置${emailServiceStatus.from ? `（发件人：${emailServiceStatus.from}）` : ''}。测试邮件立即发送，定时任务由后台服务执行，网页关闭后仍然有效。` : '服务器SMTP尚未配置。请在正式服务器环境变量中补充企业邮箱SMTP信息后，再使用测试发送和定时发送。'}</span></div></div></section>}
        {active === 'users' && <section className={'audit-log panel ' + (auditLogCollapsed ? 'is-collapsed' : '')}><div className="panel-head"><button className="panel-collapse-head" onClick={() => setAuditLogCollapsed(current => !current)} aria-expanded={!auditLogCollapsed}><div><h3>操作日志</h3><span>记录用户新增、修改、删除及安全操作</span></div><ChevronDown size={17} /></button><div className="toolbar-actions"><div className="audit-search-field"><Search size={18} /><input value={auditSearch} onChange={event => { setAuditSearch(event.target.value); setAuditPage(1); }} placeholder="输入时间、操作人、动作或类型关键字" aria-label="搜索操作日志" />{auditSearch && <button type="button" className="audit-search-clear" onClick={() => { setAuditSearch(""); setAuditPage(1); }} aria-label="清除日志搜索" title="清除日志搜索">×</button>}</div><ShieldCheck size={18} /></div></div><div className="audit-table"><div className="audit-grid audit-head"><span>时间</span><span>操作人</span><span>动作</span><span>数据类型</span><span>详细说明</span></div>{auditPageEntries.map(log => <div className="audit-grid" key={log.id}><time dateTime={log.createdAt}>{new Date(log.createdAt).toLocaleString('zh-CN', { hour12: false })}</time><span>{log.username}</span><span className={`audit-action audit-${log.action}`}>{({ create: '新增', update: '修改', delete: '删除', security: '安全操作', send: '发送' } as Record<AuditAction, string>)[log.action]}</span><span>{log.entity}</span><span className="audit-summary">{log.summary}</span></div>)}{!auditSearchEntries.length && <div className="empty">{auditSearch.trim() ? "未找到匹配的操作日志" : "暂无操作日志"}</div>}</div>{auditSearchEntries.length > 0 && renderAuditPagination()}</section>}
     </main>{toast && <div className="toast"><Check size={16} />{toast}</div>}
-    {clientModal && <Modal title={clientModal === 'new' ? '添加客户' : '编辑客户'} onClose={() => setClientModal(null)}><div className="form-grid"><label>公司名称<input value={formClient.company} onChange={e => setFormClient({ ...formClient, company: e.target.value })} placeholder="请输入公司名称" /></label><label>客户姓名<input value={formClient.name} onChange={e => setFormClient({ ...formClient, name: e.target.value })} placeholder="例如：张伟" /></label><label>联系电话<input value={formClient.phone} onChange={e => setFormClient({ ...formClient, phone: e.target.value })} /></label><label>微信号码<input type="text" value={formClient.email} onChange={e => setFormClient({ ...formClient, email: e.target.value })} /></label><label>开始时间<input type="date" value={formClient.startDate} onChange={e => setFormClient({ ...formClient, startDate: e.target.value })} /></label><label>结束时间<input type="date" value={formClient.endDate} min={formClient.startDate || undefined} onChange={e => setFormClient({ ...formClient, endDate: e.target.value })} /></label><label>省份/直辖市<select value={formClient.province} onChange={e => { const province = e.target.value; const city = Object.keys(regionCatalog[province] || {})[0] || ''; const district = (regionCatalog[province]?.[city] || [])[0] || ''; setFormClient({ ...formClient, province, city, district }); }}><option value="">请选择省份/直辖市</option>{[...new Set([...Object.keys(regionCatalog), ...clients.map(client => client.province).filter(Boolean) as string[]])].map(province => <option key={province} value={province}>{province}</option>)}</select></label><label>地市<select value={formClient.city} onChange={e => { const city = e.target.value; const district = (regionCatalog[formClient.province]?.[city] || clients.filter(client => client.province === formClient.province && client.city === city).map(client => client.district).filter(Boolean) as string[])[0] || ''; setFormClient({ ...formClient, city, district }); }}><option value="">请选择地市</option>{[...new Set([...Object.keys(regionCatalog[formClient.province] || {}), ...clients.filter(client => client.province === formClient.province).map(client => client.city).filter(Boolean) as string[]])].map(city => <option key={city} value={city}>{city}</option>)}</select></label><label>区/县<select value={formClient.district} onChange={e => setFormClient({ ...formClient, district: e.target.value })}><option value="">请选择区/县</option>{[...new Set([...(regionCatalog[formClient.province]?.[formClient.city] || []), ...clients.filter(client => client.province === formClient.province && client.city === formClient.city).map(client => client.district).filter(Boolean) as string[]])].map(district => <option key={district} value={district}>{district}</option>)}</select></label><label>客户类型<select value={formClient.customerTypeId} onChange={e => setFormClient({ ...formClient, customerTypeId: e.target.value, groupId: e.target.value })}><option value="">请选择客户类型</option>{clientGroups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label></div><div className="modal-actions"><button className="secondary-btn" onClick={() => setClientModal(null)}>取消</button><button className="primary-btn" onClick={saveClient}><Check size={16} />保存客户</button></div></Modal>}
+    {clientModal && <Modal title={clientModal === 'new' ? '添加客户' : '编辑客户'} onClose={() => setClientModal(null)}><div className="form-grid"><label>公司名称<input value={formClient.company} onChange={e => setFormClient(current => ({ ...current, company: e.currentTarget.value }))} placeholder="请输入公司名称" /></label><label>客户姓名<input value={formClient.name} onChange={e => setFormClient(current => ({ ...current, name: e.currentTarget.value }))} placeholder="例如：张伟" /></label><label>联系电话<input value={formClient.phone} onChange={e => setFormClient(current => ({ ...current, phone: e.currentTarget.value }))} /></label><label>微信号码<input type="text" value={formClient.email} onChange={e => setFormClient(current => ({ ...current, email: e.currentTarget.value }))} /></label><label>开始时间<input type="date" value={formClient.startDate} onChange={e => setFormClient(current => ({ ...current, startDate: e.currentTarget.value }))} /></label><label>结束时间<input type="date" value={formClient.endDate} min={formClient.startDate || undefined} onChange={e => setFormClient(current => ({ ...current, endDate: e.currentTarget.value }))} /></label><label>省份/直辖市<select value={formClient.province} onChange={e => { const province = e.currentTarget.value; const city = Object.keys(regionCatalog[province] || {})[0] || ''; const district = (regionCatalog[province]?.[city] || [])[0] || ''; setFormClient(current => ({ ...current, province, city, district })); }}><option value="">请选择省份/直辖市</option>{[...new Set([...Object.keys(regionCatalog), ...clients.map(client => client.province).filter(Boolean) as string[]])].map(province => <option key={province} value={province}>{province}</option>)}</select></label><label>地市<select value={formClient.city} onChange={e => { const city = e.currentTarget.value; const district = (regionCatalog[formClient.province]?.[city] || clients.filter(client => client.province === formClient.province && client.city === city).map(client => client.district).filter(Boolean) as string[])[0] || ''; setFormClient(current => ({ ...current, city, district })); }}><option value="">请选择地市</option>{[...new Set([...Object.keys(regionCatalog[formClient.province] || {}), ...clients.filter(client => client.province === formClient.province).map(client => client.city).filter(Boolean) as string[]])].map(city => <option key={city} value={city}>{city}</option>)}</select></label><label>区/县<select value={formClient.district} onChange={e => setFormClient(current => ({ ...current, district: e.currentTarget.value }))}><option value="">请选择区/县</option>{[...new Set([...(regionCatalog[formClient.province]?.[formClient.city] || []), ...clients.filter(client => client.province === formClient.province && client.city === formClient.city).map(client => client.district).filter(Boolean) as string[]])].map(district => <option key={district} value={district}>{district}</option>)}</select></label><label>客户类型<select value={formClient.customerTypeId} onChange={e => setFormClient(current => ({ ...current, customerTypeId: e.currentTarget.value, groupId: e.currentTarget.value }))}><option value="">请选择客户类型</option>{clientGroups.map(group => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label></div><div className="modal-actions"><button className="secondary-btn" onClick={() => setClientModal(null)}>取消</button><button className="primary-btn" onClick={saveClient}><Check size={16} />保存客户</button></div></Modal>}
     {groupModalOpen && <Modal title="客户类型管理" onClose={() => { setGroupModalOpen(false); setEditingGroupId(null); setGroupName(''); }}><div className="group-manager"><span className="group-list-label">客户类型</span>{clientGroups.map((group, groupIndex) => <div className="group-row" key={group.id}><strong>{group.name}</strong><div className="group-row-actions"><button className="icon-btn sort-btn" onClick={() => moveGroup(group.id, -1)} disabled={!canManageClientGroups || groupIndex === 0} aria-label={`上移${group.name}`} title="上移客户类型"><ArrowUp size={14} /></button><button className="icon-btn sort-btn" onClick={() => moveGroup(group.id, 1)} disabled={!canManageClientGroups || groupIndex === clientGroups.length - 1} aria-label={`下移${group.name}`} title="下移客户类型"><ArrowDown size={14} /></button><button className="icon-btn" onClick={() => { setEditingGroupId(group.id); setGroupName(group.name); }} disabled={!canManageClientGroups} aria-label={`编辑${group.name}`} title="编辑客户类型"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeGroup(group.id)} disabled={!canManageClientGroups} aria-label={`删除${group.name}`} title="删除客户类型"><Trash2 size={15} /></button></div></div>)}</div><div className="group-add-form"><input value={groupName} onChange={e => setGroupName(e.target.value)} disabled={!canManageClientGroups} placeholder={editingGroupId ? '修改客户类型名称' : '新增客户类型名称'} /><button className="secondary-btn" onClick={editingGroupId ? saveGroupEdit : addGroup} disabled={!canManageClientGroups}>{editingGroupId ? <Check size={15} /> : <Plus size={15} />}{editingGroupId ? '保存修改' : '添加类型'}</button></div><div className="modal-actions"><button className="primary-btn" onClick={() => { setGroupModalOpen(false); setEditingGroupId(null); setGroupName(''); notify('客户类型已保存'); }}><Check size={16} />完成</button></div></Modal>}
-    {feeTypeModalOpen && <Modal title="费用类型管理" onClose={() => setFeeTypeModalOpen(false)}><div className="group-manager"><span className="group-list-label">费用类型</span>{feeTypes.map((type, typeIndex) => <div className="group-row" key={type}><strong>{type}</strong><div className="group-row-actions"><button className="icon-btn sort-btn" onClick={() => moveFeeType(type, -1)} disabled={!canManageFeeTypes || typeIndex === 0} aria-label={`上移${type}`} title="上移费用类型"><ArrowUp size={14} /></button><button className="icon-btn sort-btn" onClick={() => moveFeeType(type, 1)} disabled={!canManageFeeTypes || typeIndex === feeTypes.length - 1} aria-label={`下移${type}`} title="下移费用类型"><ArrowDown size={14} /></button><button className="icon-btn" onClick={() => { setEditingFeeType(type); setFeeTypeName(type); }} disabled={!canManageFeeTypes} aria-label={`编辑${type}`} title="编辑费用类型"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeFeeType(type)} disabled={!canManageFeeTypes} aria-label={`删除${type}`} title="删除费用类型"><Trash2 size={15} /></button></div></div>)}</div><div className="group-add-form"><input value={feeTypeName} onChange={e => setFeeTypeName(e.target.value)} disabled={!canManageFeeTypes} placeholder={editingFeeType ? '修改费用类型' : '新增费用类型'} /><button className="secondary-btn" onClick={editingFeeType ? saveFeeTypeEdit : addFeeType} disabled={!canManageFeeTypes}>{editingFeeType ? <Check size={15} /> : <Plus size={15} />}{editingFeeType ? '保存修改' : '添加类型'}</button></div><div className="modal-actions"><button className="primary-btn" onClick={() => { setFeeTypeModalOpen(false); setEditingFeeType(null); setFeeTypeName(''); }}><Check size={16} />完成</button></div></Modal>}
-    {employeeModalOpen && <Modal title="业务经理管理" onClose={() => setEmployeeModalOpen(false)}><div className="group-manager"><span className="group-list-label">业务经理（按姓名长度排序）</span>{sortTextValues(employees).map(employee => <div className="group-row" key={employee}><strong>{employee}</strong><div className="group-row-actions"><button className="icon-btn" onClick={() => { setEditingEmployee(employee); setEmployeeName(employee); }} disabled={!canManageEmployees} aria-label={`编辑${employee}`} title="编辑业务经理"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeEmployee(employee)} disabled={!canManageEmployees} aria-label={`删除${employee}`} title="删除业务经理"><Trash2 size={15} /></button></div></div>)}</div><div className="group-add-form"><input value={employeeName} onChange={e => setEmployeeName(e.target.value)} disabled={!canManageEmployees} placeholder={editingEmployee ? '修改业务经理姓名' : '新增业务经理姓名'} /><button className="secondary-btn" onClick={editingEmployee ? saveEmployeeEdit : addEmployee} disabled={!canManageEmployees}>{editingEmployee ? <Check size={15} /> : <Plus size={15} />}{editingEmployee ? '保存修改' : '添加业务经理'}</button></div><div className="modal-actions"><button className="primary-btn" onClick={() => { setEmployeeModalOpen(false); setEditingEmployee(null); setEmployeeName(''); }}><Check size={16} />完成</button></div></Modal>}
+    {feeTypeModalOpen && <Modal title="费用类型管理" onClose={() => setFeeTypeModalOpen(false)}><div className="group-manager compact-item-manager"><span className="group-list-label">费用类型</span>{feeTypes.map((type, typeIndex) => <div className="group-row compact-item-card" key={type}><strong title={type}>{type}</strong><div className="group-row-actions"><button className="icon-btn sort-btn" onClick={() => moveFeeType(type, -1)} disabled={!canManageFeeTypes || typeIndex === 0} aria-label={`上移${type}`} title="上移费用类型"><ArrowUp size={14} /></button><button className="icon-btn sort-btn" onClick={() => moveFeeType(type, 1)} disabled={!canManageFeeTypes || typeIndex === feeTypes.length - 1} aria-label={`下移${type}`} title="下移费用类型"><ArrowDown size={14} /></button><button className="icon-btn" onClick={() => { setEditingFeeType(type); setFeeTypeName(type); }} disabled={!canManageFeeTypes} aria-label={`编辑${type}`} title="编辑费用类型"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeFeeType(type)} disabled={!canManageFeeTypes} aria-label={`删除${type}`} title="删除费用类型"><Trash2 size={15} /></button></div></div>)}</div><div className="group-add-form"><input value={feeTypeName} onChange={e => setFeeTypeName(e.target.value)} disabled={!canManageFeeTypes} placeholder={editingFeeType ? '修改费用类型' : '新增费用类型'} /><button className="secondary-btn" onClick={editingFeeType ? saveFeeTypeEdit : addFeeType} disabled={!canManageFeeTypes}>{editingFeeType ? <Check size={15} /> : <Plus size={15} />}{editingFeeType ? '保存修改' : '添加类型'}</button></div><div className="modal-actions"><button className="primary-btn" onClick={() => { setFeeTypeModalOpen(false); setEditingFeeType(null); setFeeTypeName(''); }}><Check size={16} />完成</button></div></Modal>}
+    {employeeModalOpen && <Modal title="业务经理管理" onClose={() => setEmployeeModalOpen(false)}><div className="group-manager employee-manager"><span className="group-list-label">业务经理（按姓名长度排序）</span>{sortTextValues(employees).map(employee => <div className="group-row employee-manager-row" key={employee}><strong title={employee}>{employee}</strong><div className="group-row-actions"><button className="icon-btn" onClick={() => { setEditingEmployee(employee); setEmployeeName(employee); }} disabled={!canManageEmployees} aria-label={`编辑${employee}`} title="编辑业务经理"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeEmployee(employee)} disabled={!canManageEmployees} aria-label={`删除${employee}`} title="删除业务经理"><Trash2 size={15} /></button></div></div>)}</div><div className="group-add-form"><input value={employeeName} onChange={e => setEmployeeName(e.target.value)} disabled={!canManageEmployees} placeholder={editingEmployee ? '修改业务经理姓名' : '新增业务经理姓名'} /><button className="secondary-btn" onClick={editingEmployee ? saveEmployeeEdit : addEmployee} disabled={!canManageEmployees}>{editingEmployee ? <Check size={15} /> : <Plus size={15} />}{editingEmployee ? '保存修改' : '添加业务经理'}</button></div><div className="modal-actions"><button className="primary-btn" onClick={() => { setEmployeeModalOpen(false); setEditingEmployee(null); setEmployeeName(''); }}><Check size={16} />完成</button></div></Modal>}
     {supplierModalOpen && <Modal title="供应商管理" onClose={() => { setSupplierModalOpen(false); setEditingSupplier(null); setSupplierName(''); setSupplierContact(''); setSupplierPhone(''); }} className="supplier-manager-modal">
       <div className="supplier-manager-list"><div className="supplier-manager-head"><span>供应商（按名称长度排序）</span><span>联系人</span><span>联系电话</span><span>操作</span></div>{sortTextValues(suppliers).map(supplier => { const details = supplierDetails[supplier] || { contact: '', phone: '' }; return <div className="supplier-manager-row" key={supplier}><strong title={supplier}>{supplier}</strong><span>{details.contact || '未设置'}</span><span>{details.phone || '未设置'}</span><div className="group-row-actions"><button className="icon-btn" onClick={() => { setEditingSupplier(supplier); setSupplierName(supplier); }} disabled={!canManageCostSuppliers} aria-label={`编辑${supplier}`} title="编辑供应商"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeSupplier(supplier)} disabled={!canManageCostSuppliers} aria-label={`删除${supplier}`} title="删除供应商"><Trash2 size={15} /></button></div></div>; })}</div>
-      <div className="supplier-add-form"><label>供应商名称<input value={supplierName} onChange={e => setSupplierName(e.target.value)} disabled={!canManageCostTypes} placeholder={editingSupplier ? '修改供应商名称' : '新增供应商名称'} /></label><label>联系人<input value={supplierContact} onChange={e => setSupplierContact(e.target.value)} disabled={!canManageCostTypes} placeholder="请输入联系人" /></label><label>联系电话<input value={supplierPhone} onChange={e => setSupplierPhone(e.target.value)} disabled={!canManageCostTypes} placeholder="请输入联系电话" /></label><button className="secondary-btn" onClick={editingSupplier ? saveSupplierEdit : addSupplier} disabled={!canManageCostTypes}>{editingSupplier ? <Check size={15} /> : <Plus size={15} />}{editingSupplier ? '保存修改' : '添加供应商'}</button></div>
+      <div className="supplier-add-form"><label>供应商名称<input value={supplierName} onChange={e => setSupplierName(e.target.value)} disabled={!canManageCostSuppliers} placeholder={editingSupplier ? '修改供应商名称' : '新增供应商名称'} /></label><label>联系人<input value={supplierContact} onChange={e => setSupplierContact(e.target.value)} disabled={!canManageCostSuppliers} placeholder="请输入联系人" /></label><label>联系电话<input value={supplierPhone} onChange={e => setSupplierPhone(e.target.value)} disabled={!canManageCostSuppliers} placeholder="请输入联系电话" /></label><button className="secondary-btn" onClick={editingSupplier ? saveSupplierEdit : addSupplier} disabled={!canManageCostSuppliers}>{editingSupplier ? <Check size={15} /> : <Plus size={15} />}{editingSupplier ? '保存修改' : '添加供应商'}</button></div>
       <div className="modal-actions"><button className="primary-btn" onClick={() => { setSupplierModalOpen(false); setEditingSupplier(null); setSupplierName(''); setSupplierContact(''); setSupplierPhone(''); }}><Check size={16} />完成</button></div>
     </Modal>}
-    {costTypeModalOpen && <Modal title="成本明细费用类型管理" onClose={() => setCostTypeModalOpen(false)}><div className="group-manager"><span className="group-list-label">成本类型</span>{costTypes.map(type => <div className="group-row" key={type}><strong>{type}</strong><div className="group-row-actions"><button className="icon-btn" onClick={() => { setEditingCostType(type); setCostTypeName(type); }} disabled={!canManageCostTypes} aria-label={`编辑${type}`} title="编辑成本类型"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeCostType(type)} disabled={!canManageCostTypes} aria-label={`删除${type}`} title="删除成本类型"><Trash2 size={15} /></button></div></div>)}</div><div className="group-add-form"><input value={costTypeName} onChange={e => setCostTypeName(e.target.value)} disabled={!canManageCostTypes} placeholder={editingCostType ? '修改成本类型' : '新增成本类型'} /><button className="secondary-btn" onClick={editingCostType ? saveCostTypeEdit : addCostType} disabled={!canManageCostTypes}>{editingCostType ? <Check size={15} /> : <Plus size={15} />}{editingCostType ? '保存修改' : '添加类型'}</button></div><div className="modal-actions"><button className="primary-btn" onClick={() => { setCostTypeModalOpen(false); setEditingCostType(null); setCostTypeName(''); }}><Check size={16} />完成</button></div></Modal>}
+    {costTypeModalOpen && <Modal title="成本明细费用类型管理" onClose={() => setCostTypeModalOpen(false)}><div className="group-manager compact-item-manager"><span className="group-list-label">成本类型</span>{costTypes.map(type => <div className="group-row compact-item-card" key={type}><strong title={type}>{type}</strong><div className="group-row-actions"><button className="icon-btn" onClick={() => { setEditingCostType(type); setCostTypeName(type); }} disabled={!canManageCostTypes} aria-label={`编辑${type}`} title="编辑成本类型"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeCostType(type)} disabled={!canManageCostTypes} aria-label={`删除${type}`} title="删除成本类型"><Trash2 size={15} /></button></div></div>)}</div><div className="group-add-form"><input value={costTypeName} onChange={e => setCostTypeName(e.target.value)} disabled={!canManageCostTypes} placeholder={editingCostType ? '修改成本类型' : '新增成本类型'} /><button className="secondary-btn" onClick={editingCostType ? saveCostTypeEdit : addCostType} disabled={!canManageCostTypes}>{editingCostType ? <Check size={15} /> : <Plus size={15} />}{editingCostType ? '保存修改' : '添加类型'}</button></div><div className="modal-actions"><button className="primary-btn" onClick={() => { setCostTypeModalOpen(false); setEditingCostType(null); setCostTypeName(''); }}><Check size={16} />完成</button></div></Modal>}
     {recordModal && <Modal title={recordModal === 'new' ? `添加费用明细 · ${selected?.company ?? ''}` : `编辑费用明细 · ${selected?.company ?? ''}`} onClose={closeRecordModal} className="record-modal">
       <div className="form-grid">
         {recordModal !== 'new' && <label>单据ID<input value={recordModal.docId} readOnly /></label>}
         {recordModal === 'new' && <label>单据ID<input value={makeDocId(formRecord.recordDate, records)} readOnly /></label>}
-        <label>时间选择<input type="date" value={formRecord.recordDate} onChange={e => setFormRecord({ ...formRecord, recordDate: e.target.value })} /></label>
+        <label>时间选择<input ref={recordDateInput} type="date" value={formRecord.recordDate} onChange={e => setFormRecord(current => ({ ...current, recordDate: e.currentTarget.value }))} onInput={e => setFormRecord(current => ({ ...current, recordDate: e.currentTarget.value }))} /></label>
         <label>业务经理<select required value={formRecord.employee} onChange={e => setFormRecord({ ...formRecord, employee: e.target.value })}><option value="" disabled>请选择业务经理</option>{employees.map(employee => <option key={employee} value={employee}>{employee}</option>)}</select></label>
         <label>费用类型<select required value={formRecord.feeType} onChange={e => setFormRecord({ ...formRecord, feeType: e.target.value })}><option value="" disabled>请选择费用类型</option>{feeTypes.map(type => <option key={type}>{type}</option>)}</select></label>
         <label>项目名称<input value={formRecord.projectName} onChange={e => setFormRecord({ ...formRecord, projectName: e.target.value })} placeholder="可选填写项目名称" /></label>
         <label>费用金额（元）<input type="number" min="0" value={formRecord.fee} onChange={e => setFormRecord({ ...formRecord, fee: e.target.value })} /></label>
         <label>支付金额（元）<input type="number" min="0" value={formRecord.paid} onChange={e => setFormRecord({ ...formRecord, paid: e.target.value })} /></label>
-        <label>预计支付时间<input type="date" value={formRecord.paymentDate} onChange={e => setFormRecord({ ...formRecord, paymentDate: e.target.value })} /></label>
+        <label>预计支付时间<input ref={recordPaymentDateInput} type="date" value={formRecord.paymentDate} onChange={e => setFormRecord(current => ({ ...current, paymentDate: e.currentTarget.value }))} onInput={e => setFormRecord(current => ({ ...current, paymentDate: e.currentTarget.value }))} /></label>
         <label>支付方式<select required value={formRecord.method} onChange={e => setFormRecord({ ...formRecord, method: e.target.value })}><option value="">请选择</option><option value="未付款">未付款</option><option>银行转账</option><option>微信支付</option><option>支付宝</option><option>现金</option></select></label>
         <label className="full">备注<textarea rows={3} value={formRecord.note} onChange={e => setFormRecord({ ...formRecord, note: e.target.value })} placeholder="填写服务内容或收款备注" /></label>
-        <AttachmentPanel note="费用凭证必填，保存费用明细后才上传" inputRef={recordAttachmentInput} savedAttachments={savedAttachments} pendingAttachments={pendingAttachments} onChange={handleRecordAttachments} onRemoveSaved={removeSavedAttachment} onRemovePending={removePendingAttachment} />
+        <AttachmentPanel note="费用凭证必填，选中后立即上传" inputRef={recordAttachmentInput} savedAttachments={savedAttachments} pendingAttachments={pendingAttachments} onChange={handleRecordAttachments} onRemoveSaved={removeSavedAttachment} onRemovePending={removePendingAttachment} />
       </div>
       <div className="calc-box"><strong>未支付 {money(Math.max(0, Number(formRecord.fee || 0) - Number(formRecord.paid || 0)))}</strong></div>
-      <div className="modal-actions"><button className="secondary-btn" onClick={closeRecordModal} disabled={recordSaving}>取消</button><button className="primary-btn" onClick={saveRecord} disabled={recordSaving || (recordModal === 'new' ? !canCreateFee : !canEditFee)}><Check size={16} />{recordSaving ? '正在保存' : '保存费用明细'}</button></div>
+      <div className="modal-actions"><button className="secondary-btn" onClick={closeRecordModal} disabled={recordSaving}>取消</button><button className="primary-btn" onClick={saveRecord} disabled={recordSaving || pendingAttachments.length > 0 || (recordModal === 'new' ? !canCreateFee : !canEditFee)}><Check size={16} />{recordSaving ? '正在保存' : '保存费用明细'}</button></div>
     </Modal>}
     {dailyExpenseTypeManagerOpen && <Modal title="费用类型管理" onClose={closeDailyExpenseTypeManager} className="daily-expense-manager-modal"><div className="group-manager"><span className="group-list-label">费用类型（按字符长度排序）</span>{dailyExpenseTypes.map(item => <div className="group-row" key={item}><strong>{item}</strong><div className="group-row-actions"><button className="icon-btn" onClick={() => { setEditingDailyExpenseType(item); setDailyExpenseTypeName(item); }} aria-label={`编辑${item}`} title="编辑费用类型"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeDailyExpenseListValue('type', item)} aria-label={`删除${item}`} title="删除费用类型"><Trash2 size={15} /></button></div></div>)}</div><div className="group-add-form"><input value={dailyExpenseTypeName} onChange={event => setDailyExpenseTypeName(event.target.value)} placeholder={editingDailyExpenseType ? '修改费用类型' : '新增费用类型'} /><button className="secondary-btn" onClick={() => saveDailyExpenseListValue('type')}>{editingDailyExpenseType ? <Check size={15} /> : <Plus size={15} />}{editingDailyExpenseType ? '保存修改' : '添加类型'}</button></div><div className="modal-actions"><button className="primary-btn" onClick={closeDailyExpenseTypeManager}><Check size={16} />完成</button></div></Modal>}
     {reimburserManagerOpen && <Modal title="报销人管理" onClose={closeReimburserManager} className="daily-expense-manager-modal"><div className="group-manager"><span className="group-list-label">报销人（按字符长度排序）</span>{reimbursers.map(item => <div className="group-row" key={item}><strong>{item}</strong><div className="group-row-actions"><button className="icon-btn" onClick={() => { setEditingReimburser(item); setReimburserName(item); }} disabled={!canManageActiveReimbursers} aria-label={`编辑${item}`} title="编辑报销人"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removeDailyExpenseListValue('reimburser', item)} disabled={!canManageActiveReimbursers} aria-label={`删除${item}`} title="删除报销人"><Trash2 size={15} /></button></div></div>)}</div><div className="group-add-form"><input value={reimburserName} onChange={event => setReimburserName(event.target.value)} disabled={!canManageActiveReimbursers} placeholder={editingReimburser ? '修改报销人' : '新增报销人'} /><button className="secondary-btn" onClick={() => saveDailyExpenseListValue('reimburser')} disabled={!canManageActiveReimbursers}>{editingReimburser ? <Check size={15} /> : <Plus size={15} />}{editingReimburser ? '保存修改' : '添加报销人'}</button></div><div className="modal-actions"><button className="primary-btn" onClick={closeReimburserManager}><Check size={16} />完成</button></div></Modal>}
@@ -2045,12 +2210,12 @@ export default function App() {
         <label>报销人<select required value={formDailyExpense.reimburser} onChange={event => setFormDailyExpense(current => ({ ...current, reimburser: event.target.value }))}><option value="">请选择报销人</option>{reimbursers.map(item => <option key={item} value={item}>{item}</option>)}</select></label>
         <label>成本费用（元）<input type="number" min="0" value={formDailyExpense.amount} onChange={event => setFormDailyExpense(current => ({ ...current, amount: event.target.value }))} /></label>
         <label className="full">备注<textarea rows={3} value={formDailyExpense.note} onChange={event => setFormDailyExpense(current => ({ ...current, note: event.target.value }))} placeholder="填写报销事由或费用说明" /></label>
-        <AttachmentPanel note="费用凭证必填，保存日常费用后才上传" inputRef={dailyExpenseAttachmentInput} savedAttachments={savedDailyExpenseAttachments} pendingAttachments={pendingDailyExpenseAttachments} onChange={handleDailyExpenseAttachments} onRemoveSaved={removeSavedDailyExpenseAttachment} onRemovePending={removePendingDailyExpenseAttachment} />
+        <AttachmentPanel note="费用凭证必填，选中后立即上传" inputRef={dailyExpenseAttachmentInput} savedAttachments={savedDailyExpenseAttachments} pendingAttachments={pendingDailyExpenseAttachments} onChange={handleDailyExpenseAttachments} onRemoveSaved={removeSavedDailyExpenseAttachment} onRemovePending={removePendingDailyExpenseAttachment} />
       </div>
-      <div className="modal-actions"><button className="secondary-btn" onClick={closeDailyExpenseModal} disabled={dailyExpenseSaving}>取消</button><button className="primary-btn" onClick={saveDailyExpense} disabled={dailyExpenseSaving}><Check size={16} />{dailyExpenseSaving ? '正在保存' : '保存日常费用'}</button></div>
+      <div className="modal-actions"><button className="secondary-btn" onClick={closeDailyExpenseModal} disabled={dailyExpenseSaving}>取消</button><button className="primary-btn" onClick={saveDailyExpense} disabled={dailyExpenseSaving || pendingDailyExpenseAttachments.length > 0}><Check size={16} />{dailyExpenseSaving ? '正在保存' : '保存日常费用'}</button></div>
     </Modal>}
-    {paymentModal && <Modal title={`${editingPaymentId ? '修改回款' : '添加回款'} · ${selected?.company ?? ''}`} onClose={closePaymentModal}><div className="form-grid"><label className="full">欠款单据ID<select value={formPayment.docId} onChange={e => setFormPayment({ ...formPayment, docId: e.target.value })}>{selectedRecords.filter(r => r.fee > paidFor(r) || r.docId === formPayment.docId).map(r => <option key={r.docId} value={r.docId}>{r.docId} · 应收 {money(r.fee)} · 欠款 {money(Math.max(0, r.fee - paidFor(r) + (editingPaymentId && r.docId === formPayment.docId ? (payments.find(p => p.id === editingPaymentId)?.amount ?? 0) : 0)))}</option>)}</select></label><label>收款时间<input type="date" value={formPayment.paymentDate} onChange={e => setFormPayment({ ...formPayment, paymentDate: e.target.value })} /></label><label>收款方式<select required value={formPayment.method} onChange={e => setFormPayment({ ...formPayment, method: e.target.value })}><option value="">请选择</option><option>银行转账</option><option>微信支付</option><option>支付宝</option><option>现金</option></select></label><label>收款金额（元）<input type="number" min="0" value={formPayment.amount} onChange={e => setFormPayment({ ...formPayment, amount: e.target.value })} /></label><label>修改预计支付时间<input type="date" value={formPayment.expectedPaymentDate} onChange={e => setFormPayment(current => ({ ...current, expectedPaymentDate: e.target.value }))} /></label><label className="full">备注信息<textarea rows={3} value={formPayment.note} onChange={e => setFormPayment({ ...formPayment, note: e.target.value })} placeholder="填写本次收款备注" /></label><AttachmentPanel note="回款凭证必填，保存回款后才上传" inputRef={paymentAttachmentInput} savedAttachments={savedPaymentAttachments} pendingAttachments={pendingPaymentAttachments} onChange={handlePaymentAttachments} onRemoveSaved={removeSavedPaymentAttachment} onRemovePending={removePendingPaymentAttachment} /></div><div className="modal-actions"><button className="secondary-btn" onClick={closePaymentModal} disabled={paymentSaving}>取消</button><button className="primary-btn" onClick={savePayment} disabled={paymentSaving || (editingPaymentId ? !canEditPaymentRecord : !canCreatePayment)}><Check size={16} />{paymentSaving ? '正在保存' : editingPaymentId ? '保存回款' : '添加回款'}</button></div></Modal>}
-    {costModal && <Modal title={`${costModal === 'new' ? '添加成本费用' : '修改成本费用'} · ${selected?.company ?? ''}`} onClose={closeCostModal}><div className="form-grid"><label className="full">费用单据<select value={formCost.docId} onChange={e => setFormCost({ ...formCost, docId: e.target.value })}>{selectedRecords.map(record => <option key={record.docId} value={record.docId}>{record.docId} · {record.feeType} · {money(record.fee)}</option>)}</select></label><label className="supplier-field"><span>供应商</span><input value={supplierSearch} onChange={e => setSupplierSearch(e.target.value)} placeholder="搜索供应商" aria-label="搜索供应商" /><select required value={formCost.supplier} onChange={e => setFormCost({ ...formCost, supplier: e.target.value })}><option value="">请选择供应商</option>{filteredSuppliers.map(supplier => <option key={supplier} value={supplier}>{supplier}</option>)}</select></label><label>报销人<select required value={formCost.reimburser} onChange={e => setFormCost({ ...formCost, reimburser: e.target.value })}><option value="">请选择报销人</option>{reimbursers.map(reimburser => <option key={reimburser} value={reimburser}>{reimburser}</option>)}</select></label><label className="cost-type-field"><span>费用类型</span><select required value={formCost.costType} onChange={e => setFormCost({ ...formCost, costType: e.target.value })}><option value="">请选择费用类型</option>{costTypes.map(type => <option key={type} value={type}>{type}</option>)}</select></label><label>时间选择<input type="date" value={formCost.createdAt} onChange={e => setFormCost({ ...formCost, createdAt: e.target.value })} /></label><label>成本费用（元）<input type="number" min="0" value={formCost.amount} onChange={e => setFormCost({ ...formCost, amount: e.target.value })} /></label><label className="full">备注<textarea rows={3} value={formCost.note} onChange={e => setFormCost({ ...formCost, note: e.target.value })} placeholder="填写成本费用说明" /></label><AttachmentPanel note="成本凭证必填，保存成本费用后才上传" inputRef={costAttachmentInput} savedAttachments={savedCostAttachments} pendingAttachments={pendingCostAttachments} onChange={handleCostAttachments} onRemoveSaved={removeSavedCostAttachment} onRemovePending={removePendingCostAttachment} /></div><div className="calc-box"><strong>预计利润 {money((selectedRecords.find(record => record.docId === formCost.docId)?.fee ?? 0) - Number(formCost.amount || 0))}</strong></div><div className="modal-actions"><button className="secondary-btn" onClick={closeCostModal} disabled={costSaving}>取消</button><button className="primary-btn" onClick={saveCost} disabled={costSaving || (costModal === 'new' ? !canCreateCost : !canEditCost)}><Check size={16} />{costSaving ? '正在保存' : '保存成本费用'}</button></div></Modal>}
+    {paymentModal && <Modal title={`${editingPaymentId ? '修改回款' : '添加回款'} · ${selected?.company ?? ''}`} onClose={closePaymentModal}><div className="form-grid"><label className="full">欠款单据ID<select value={formPayment.docId} onChange={e => setFormPayment({ ...formPayment, docId: e.target.value })}>{selectedRecords.filter(r => r.fee > paidFor(r) || r.docId === formPayment.docId).map(r => <option key={r.docId} value={r.docId}>{r.docId} · 应收 {money(r.fee)} · 欠款 {money(Math.max(0, r.fee - paidFor(r) + (editingPaymentId && r.docId === formPayment.docId ? (payments.find(p => p.id === editingPaymentId)?.amount ?? 0) : 0)))}</option>)}</select></label><label>收款时间<input type="date" value={formPayment.paymentDate} onChange={e => setFormPayment({ ...formPayment, paymentDate: e.target.value })} /></label><label>收款方式<select required value={formPayment.method} onChange={e => setFormPayment({ ...formPayment, method: e.target.value })}><option value="">请选择</option><option>银行转账</option><option>微信支付</option><option>支付宝</option><option>现金</option></select></label><label>收款金额（元）<input type="number" min="0" value={formPayment.amount} onChange={e => setFormPayment({ ...formPayment, amount: e.target.value })} /></label><label>修改预计支付时间<input type="date" value={formPayment.expectedPaymentDate} onChange={e => setFormPayment(current => ({ ...current, expectedPaymentDate: e.target.value }))} /></label><label className="full">备注信息<textarea rows={3} value={formPayment.note} onChange={e => setFormPayment({ ...formPayment, note: e.target.value })} placeholder="填写本次收款备注" /></label><AttachmentPanel note="回款凭证必填，选中后立即上传" inputRef={paymentAttachmentInput} savedAttachments={savedPaymentAttachments} pendingAttachments={pendingPaymentAttachments} onChange={handlePaymentAttachments} onRemoveSaved={removeSavedPaymentAttachment} onRemovePending={removePendingPaymentAttachment} /></div><div className="modal-actions"><button className="secondary-btn" onClick={closePaymentModal} disabled={paymentSaving}>取消</button><button className="primary-btn" onClick={savePayment} disabled={paymentSaving || pendingPaymentAttachments.length > 0 || (editingPaymentId ? !canEditPaymentRecord : !canCreatePayment)}><Check size={16} />{paymentSaving ? '正在保存' : editingPaymentId ? '保存回款' : '添加回款'}</button></div></Modal>}
+    {costModal && <Modal title={`${costModal === 'new' ? '添加成本费用' : '修改成本费用'} · ${selected?.company ?? ''}`} onClose={closeCostModal}><div className="form-grid"><label className="full">费用单据<select value={formCost.docId} onChange={e => setFormCost({ ...formCost, docId: e.target.value })}>{selectedRecords.map(record => <option key={record.docId} value={record.docId}>{record.docId} · {record.feeType} · {money(record.fee)}</option>)}</select></label><label className="supplier-field"><span>供应商</span><input value={supplierSearch} onChange={e => setSupplierSearch(e.target.value)} placeholder="搜索供应商" aria-label="搜索供应商" /><select required value={formCost.supplier} onChange={e => setFormCost({ ...formCost, supplier: e.target.value })}><option value="">请选择供应商</option>{filteredSuppliers.map(supplier => <option key={supplier} value={supplier}>{supplier}</option>)}</select></label><label>报销人<select required value={formCost.reimburser} onChange={e => setFormCost({ ...formCost, reimburser: e.target.value })}><option value="">请选择报销人</option>{reimbursers.map(reimburser => <option key={reimburser} value={reimburser}>{reimburser}</option>)}</select></label><label className="cost-type-field"><span>费用类型</span><select required value={formCost.costType} onChange={e => setFormCost({ ...formCost, costType: e.target.value })}><option value="">请选择费用类型</option>{costTypes.map(type => <option key={type} value={type}>{type}</option>)}</select></label><label>时间选择<input type="date" value={formCost.createdAt} onChange={e => setFormCost({ ...formCost, createdAt: e.target.value })} /></label><label>成本费用（元）<input type="number" min="0" value={formCost.amount} onChange={e => setFormCost({ ...formCost, amount: e.target.value })} /></label><label className="full">备注<textarea rows={3} value={formCost.note} onChange={e => setFormCost({ ...formCost, note: e.target.value })} placeholder="填写成本费用说明" /></label><AttachmentPanel note="成本凭证必填，选中后立即上传" inputRef={costAttachmentInput} savedAttachments={savedCostAttachments} pendingAttachments={pendingCostAttachments} onChange={handleCostAttachments} onRemoveSaved={removeSavedCostAttachment} onRemovePending={removePendingCostAttachment} /></div><div className="calc-box"><strong>预计利润 {money((selectedRecords.find(record => record.docId === formCost.docId)?.fee ?? 0) - Number(formCost.amount || 0))}</strong></div><div className="modal-actions"><button className="secondary-btn" onClick={closeCostModal} disabled={costSaving}>取消</button><button className="primary-btn" onClick={saveCost} disabled={costSaving || pendingCostAttachments.length > 0 || (costModal === 'new' ? !canCreateCost : !canEditCost)}><Check size={16} />{costSaving ? '正在保存' : '保存成本费用'}</button></div></Modal>}
     {customerInfoModal && <Modal title={`${editingCustomerInfoId ? '编辑' : '添加'}运维资料 · ${selected?.company ?? ''}`} onClose={() => { setCustomerInfoModal(false); setEditingCustomerInfoId(null); }}><div className="form-grid"><label>名称<input value={formCustomerInfo.name} onChange={e => setFormCustomerInfo({ ...formCustomerInfo, name: e.target.value })} placeholder="例如：合同编号、联系人" /></label><label className="full">备注<textarea rows={4} value={formCustomerInfo.note} onChange={e => setFormCustomerInfo({ ...formCustomerInfo, note: e.target.value })} placeholder="填写运维资料备注" /></label></div><div className="modal-actions"><button className="secondary-btn" onClick={() => { setCustomerInfoModal(false); setEditingCustomerInfoId(null); }}>取消</button><button className="primary-btn" onClick={saveCustomerInfo} disabled={editingCustomerInfoId ? !canEditInfoRecord : !canCreateInfo}><Check size={16} />{editingCustomerInfoId ? '保存修改' : '保存运维资料'}</button></div></Modal>}
     {permissionGroupModal && <Modal title="角色权限管理" onClose={() => { setPermissionGroupModal(false); setEditingPermissionGroupId(null); }}><section className="permission-section permission-roles-section"><button className="permission-section-head" onClick={() => setPermissionRolesCollapsed(current => !current)} aria-expanded={!permissionRolesCollapsed}><span><ChevronDown size={15} />已有角色</span><small>{permissionGroups.length} 个角色</small></button>{!permissionRolesCollapsed && <div className="group-manager">{permissionGroups.map(group => <div className="group-row" key={group.id}><div><strong>{group.name}</strong><small className="group-permission-summary">{group.permissions.length} 项权限</small></div><div className="group-row-actions"><button className="icon-btn" onClick={() => openPermissionGroupEdit(group)} aria-label={`编辑${group.name}`} title="编辑角色"><Edit3 size={15} /></button><button className="icon-btn danger" onClick={() => removePermissionGroup(group.id)} aria-label={`删除${group.name}`} title="删除角色"><Trash2 size={15} /></button></div></div>)}</div>}</section><section className="permission-section permission-add-role-fixed"><div className="permission-section-head"><span>添加角色</span><small>{editingPermissionGroupId ? '修改当前角色' : '新增角色'}</small></div><div className="group-add-form"><input value={permissionGroupName} onChange={e => setPermissionGroupName(e.target.value)} placeholder={editingPermissionGroupId ? '修改角色名称' : '新增角色名称'} /><button className={editingPermissionGroupId ? 'secondary-btn edit-role-save-hidden' : 'secondary-btn'} onClick={editingPermissionGroupId ? savePermissionGroupEdit : addPermissionGroup}>{editingPermissionGroupId ? <Check size={15} /> : <Plus size={15} />}{editingPermissionGroupId ? '保存修改' : '添加角色'}</button></div></section><section className="permission-section"><button className="permission-section-head" onClick={() => setPermissionChecksCollapsed(current => !current)} aria-expanded={!permissionChecksCollapsed}><span><ChevronDown size={15} />角色可访问板块与标签</span><small>{permissionGroupPermissions.length} 项已选</small></button>{!permissionChecksCollapsed && <div className="permission-checks">{allPermissions.filter(permission => !permissionHierarchy.some(item => item.children.includes(permission.key))).map(renderPermissionItem)}</div>}</section><div className="modal-actions"><button className="primary-btn" onClick={completePermissionGroupModal}><Check size={16} />完成</button></div></Modal>}
     {permissionSaveConfirmOpen && <div className="modal-backdrop confirm-backdrop" onMouseDown={() => setPermissionSaveConfirmOpen(false)}><div className="modal confirm-modal" onMouseDown={event => event.stopPropagation()}><div className="modal-head"><h3>确认保存</h3><button className="icon-btn" onClick={() => setPermissionSaveConfirmOpen(false)} aria-label="关闭确认"><X size={18} /></button></div><p className="confirm-message">确认保存当前角色的权限修改吗？</p><div className="modal-actions"><button className="secondary-btn" onClick={() => setPermissionSaveConfirmOpen(false)}>取消</button><button className="primary-btn" onClick={confirmPermissionGroupSave}><Check size={16} />确认保存</button></div></div></div>}
