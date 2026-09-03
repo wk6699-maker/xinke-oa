@@ -225,7 +225,7 @@
 
 .profit-filter-bar {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(6, minmax(0, 1fr)) auto;
   align-items: end;
   gap: 10px;
   padding: 14px;
@@ -290,7 +290,7 @@
 
 .profit-analysis-row {
   display: grid;
-  grid-template-columns: .8fr .75fr 1.25fr 1fr repeat(4, .85fr);
+  grid-template-columns: 1fr 1.25fr 1fr .85fr .9fr .9fr repeat(4, .85fr) 34px;
   align-items: center;
   gap: 10px;
   min-height: 52px;
@@ -305,6 +305,7 @@
 .profit-analysis-row > span,
 .profit-analysis-row > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profit-analysis-row > strong { color: #2d4140; font-weight: 600; }
+.profit-client-link { width: 30px; height: 30px; justify-self: end; }
 
 /* Company expense statistics reuse the dashboard analysis surface with a six-column detail table. */
 .company-expense-analysis-panel { margin-top: 18px; }

@@ -879,7 +879,37 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   width: min(810px, calc(100vw - 32px));
 }
 .record-modal .form-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+@media (max-width: 1050px) and (min-width: 761px) {
+  .record-modal .form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* High-contrast table text: keep semantic amount colors while making labels and dates pure black. */
+.records-table .record-grid,
+.records-table .record-grid-head,
+.profit-analysis-table .profit-analysis-row,
+.profit-analysis-table .profit-analysis-head {
+  color: #000 !important;
+}
+.records-table .record-grid > span,
+.records-table .record-grid > div:not(.record-actions),
+.records-table .record-grid > div:not(.record-actions) span,
+.records-table .record-grid > div:not(.record-actions) strong,
+.records-table .record-grid small,
+.profit-analysis-table .profit-analysis-row > span,
+.profit-analysis-table .profit-analysis-row > strong {
+  color: #000 !important;
+}
+.records-table .record-grid .green,
+.profit-analysis-table .profit-analysis-row .green {
+  color: #167c4b !important;
+}
+.records-table .record-grid .red,
+.profit-analysis-table .profit-analysis-row .red {
+  color: #b42318 !important;
 }
 @media (max-width: 760px) {
   .record-modal .form-grid {

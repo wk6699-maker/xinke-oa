@@ -1,0 +1,89 @@
+/* Final responsive layer. Keeps dense desktop data surfaces usable on touch devices. */
+.mobile-menu, .mobile-nav-backdrop { display: none; }
+
+@media (max-width: 760px) {
+  html, body, #root { min-width: 0; overflow-x: clip; }
+  .app-shell { display: block; min-height: 100dvh; }
+  .app-sidebar {
+    position: fixed; z-index: 50; inset: 0 auto 0 0;
+    width: min(276px, calc(100vw - 44px)); min-height: 100dvh;
+    flex-basis: auto; padding: 22px 15px 18px;
+    overflow-y: auto; box-shadow: 16px 0 36px rgb(9 35 34 / 28%);
+    transform: translateX(-105%); transition: transform 180ms ease;
+  }
+  .mobile-nav-open .app-sidebar { transform: translateX(0); }
+  .mobile-nav-backdrop { display: block; position: fixed; z-index: 49; inset: 0; width: 100%; height: 100%; border: 0; background: rgb(9 26 27 / 42%); opacity: 0; pointer-events: none; transition: opacity 180ms ease; }
+  .mobile-nav-open .mobile-nav-backdrop { opacity: 1; pointer-events: auto; }
+  .sidebar-brand { justify-content: flex-start; padding: 0 7px; }
+  .app-shell .app-sidebar .sidebar-brand > div:last-child,
+  .app-shell .app-sidebar .nav-item,
+  .app-shell .app-sidebar .sub-nav-item,
+  .app-shell .app-sidebar .profile > div:last-child,
+  .app-shell .app-sidebar .logout { font-size: inherit !important; }
+  .app-sidebar nav { margin-top: 34px; }
+  .app-shell .app-sidebar .nav-item { min-height: 46px; justify-content: flex-start; padding: 0 13px; font-size: 14px !important; }
+  .nav-item svg { width: 18px; }
+  .sub-nav { margin-left: 26px; padding-left: 14px; border-left: 1px solid #315454; }
+  .app-shell .app-sidebar .sub-nav-item { min-height: 42px; justify-content: flex-start; padding: 0 10px; font-size: 13px !important; }
+  .sidebar-bottom { padding: 16px 7px 0; }
+  .profile { justify-content: flex-start; }
+  .app-shell .app-sidebar .logout { min-height: 44px; justify-content: flex-start; font-size: 13px !important; }
+
+  .main { min-width: 0; padding: 0 14px 28px; overflow-x: visible; }
+  .topbar { position: sticky; z-index: 20; top: 0; height: 68px; gap: 10px; background: #f5f7f8; }
+  .mobile-menu { display: inline-flex; flex: 0 0 44px; width: 44px; height: 44px; margin-right: 0; }
+  .topbar > div:first-of-type { min-width: 0; flex: 1; }
+  .topbar h2 { overflow: hidden; font-size: 19px; text-overflow: ellipsis; white-space: nowrap; }
+  .top-actions { flex: 0 0 auto; gap: 0; }
+  .top-avatar { width: 40px; height: 40px; }
+  .account-menu-popover { position: fixed; top: 58px; right: 14px; width: min(220px, calc(100vw - 28px)); }
+
+  .welcome { padding: 22px 0 18px; gap: 16px; }
+  .welcome h1 { font-size: 25px; line-height: 1.28; }
+  .welcome h1:after { content: none; }
+  .welcome p:not(.eyebrow) { font-size: 13px; line-height: 1.55; }
+  .page-toolbar, .record-head, .daily-expenses-head, .cost-record-selector-head { align-items: stretch; flex-direction: column; gap: 12px; }
+  .toolbar-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+  .toolbar-actions .search-wrap, .toolbar-actions .primary-btn:only-child, .toolbar-actions > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .toolbar-actions .primary-btn, .toolbar-actions .secondary-btn { min-width: 0; width: 100%; min-height: 42px; padding: 0 10px; }
+  .search-wrap { width: 100%; max-width: none; min-width: 0; min-height: 44px; }
+  .search-wrap input { min-width: 0; }
+  .primary-btn, .secondary-btn, .text-btn { min-height: 42px; }
+  .icon-btn { min-width: 40px; min-height: 40px; }
+  .panel-head { align-items: flex-start; gap: 10px; }
+  .panel-head > .text-btn { flex: 0 0 auto; }
+  .record-tabs { width: 100%; overflow-x: auto; scrollbar-width: thin; }
+  .record-tabs button { flex: 0 0 auto; min-height: 42px; }
+  .record-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; padding: 0 12px 12px; }
+  .record-summary > div { min-width: 0; padding: 12px 8px; }
+  .record-summary strong { overflow-wrap: anywhere; font-size: 14px; }
+  .detail { overflow: hidden; }
+  .detail-head { flex-wrap: wrap; }
+  .detail-head h3 { overflow-wrap: anywhere; }
+  .contact-strip { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  .records-table, .users-table, .daily-expenses-table, .customer-info-list { max-width: 100%; overscroll-behavior-inline: contain; }
+  .records-table { margin-inline: 0; }
+  .record-actions { flex-wrap: nowrap; }
+  .daily-expenses-page, .users-page, .clients-page { min-width: 0; }
+  .daily-expenses-head { padding: 14px; }
+  .daily-expense-pagination, .dashboard-pagination { padding-inline: 0; }
+
+  .modal-backdrop, .confirm-backdrop { padding: 12px; align-items: center; }
+  .modal, .confirm-modal { width: 100%; max-width: none; max-height: calc(100dvh - 24px); overflow: auto; }
+  .modal-head { position: sticky; z-index: 1; top: 0; background: #fff; }
+  .form-grid { grid-template-columns: 1fr; gap: 12px; }
+  .form-grid .full { grid-column: auto; }
+  .form-grid input, .form-grid select, .form-grid textarea { min-height: 44px; }
+  .form-actions { position: sticky; bottom: 0; padding-top: 12px; background: #fff; }
+  .form-actions .primary-btn, .form-actions .secondary-btn { flex: 1; min-height: 44px; }
+  .attachment-list, .attachment-upload-row { min-width: 0; }
+  .attachment-name, .attachment-item { overflow-wrap: anywhere; }
+}
+
+@media (max-width: 359px) {
+  .kpi-grid { grid-template-columns: 1fr; }
+  .record-summary { grid-template-columns: 1fr; }
+  .toolbar-actions { grid-template-columns: 1fr; }
+  .toolbar-actions > * { grid-column: 1 / -1; }
+  .topbar h2 { font-size: 18px; }
+}

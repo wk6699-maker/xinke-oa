@@ -115,7 +115,7 @@
 }
 
 .fee-record-grid {
-  grid-template-columns: 1.35fr .72fr .88fr .8fr .86fr .86fr .86fr 1.02fr .88fr 96px;
+  grid-template-columns: 1.35fr .88fr .8fr .86fr .86fr .86fr 1.02fr .88fr .88fr .88fr 96px;
 }
 
 @media (max-width: 760px) {
@@ -141,6 +141,6 @@
   }
 
   .fee-record-grid {
-    min-width: 850px;
+    min-width: 980px;
   }
 }

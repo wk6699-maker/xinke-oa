@@ -7,6 +7,7 @@ import './dashboard-overrides.css';
 import './region-directory.css';
 import './ui-ux-overrides.css';
 import './record-attachments.css';
+import './mobile-overrides.css';
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
