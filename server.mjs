@@ -233,6 +233,41 @@ function sameValue(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function normalizeCompanyName(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function ensureUniqueClientCompanies(clients) {
+  const companies = new Map();
+  for (const client of Array.isArray(clients) ? clients : []) {
+    const normalized = normalizeCompanyName(client?.company);
+    if (!normalized) continue;
+    if (companies.has(normalized)) throw new Error("DUPLICATE_CLIENT_COMPANY");
+    companies.set(normalized, client?.id);
+  }
+}
+
+function ensureDocumentIdsImmutable(currentPayload, nextPayload, key) {
+  const currentItems = Array.isArray(currentPayload?.[key])
+    ? currentPayload[key]
+    : [];
+  const nextItems = Array.isArray(nextPayload?.[key]) ? nextPayload[key] : [];
+  const nextById = new Map(
+    nextItems
+      .filter((item) => item && item.id != null)
+      .map((item) => [String(item.id), item]),
+  );
+  for (const item of currentItems) {
+    if (!item || item.id == null || !item.docId) continue;
+    const updated = nextById.get(String(item.id));
+    if (updated && String(updated.docId || "") !== String(item.docId))
+      throw new Error("DOCUMENT_ID_IMMUTABLE");
+  }
+}
+
 function preserveAndHashUsers(currentUsers, incomingUsers) {
   const previous = new Map(
     (Array.isArray(currentUsers) ? currentUsers : []).map((user) => [
@@ -290,8 +325,15 @@ function normalizeIncomingPayload(currentPayload, incomingPayload, userId) {
   }
   const changed = (key) => !sameValue(current[key], next[key]);
 
+  // A fee document is the parent key for payments and costs. Keep it stable so
+  // historical links and arrears references cannot be broken by an edit.
+  ensureDocumentIdsImmutable(current, next, "records");
+  ensureDocumentIdsImmutable(current, next, "dailyExpenses");
+
   if (changed("users") || changed("permissionGroups"))
     requireAnyPermission(current, userId, ["users"]);
+  if (changed("clients"))
+    ensureUniqueClientCompanies(next.clients);
   if (changed("clients"))
     requireArrayChangePermission(current, next, "clients", userId, {
       create: ["clientCreate"],
@@ -1396,6 +1438,8 @@ const server = createServer((req, res) => {
             "INVALID_NEW_USER_PASSWORD",
             "INVALID_USERS",
             "INVALID_STATE",
+            "DOCUMENT_ID_IMMUTABLE",
+            "DUPLICATE_CLIENT_COMPANY",
           ].includes(error?.message);
           send(
             res,

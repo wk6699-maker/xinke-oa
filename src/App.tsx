@@ -793,28 +793,30 @@ function readNavigationState() {
   }
 }
 
-const makeDocId = (date: string, records: RecordItem[]) => {
-  const normalized = date.replace(/-/g, "");
-  const prefix =
-    normalized.length === 8
-      ? normalized
-      : new Date().toISOString().slice(0, 10).replace(/-/g, "");
+const localDateKey = (value = new Date()) => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+};
+
+const makeDocId = (_date: string, records: RecordItem[]) => {
+  // Document IDs are issued from the current local date and are immutable after creation.
+  const prefix = localDateKey();
   const next =
     records
       .filter((record) => record.docId?.startsWith(prefix))
       .reduce(
-        (max, record) => Math.max(max, Number(record.docId.slice(-3)) || 0),
+        (max, record) =>
+          Math.max(max, Number(String(record.docId).slice(prefix.length)) || 0),
         0,
       ) + 1;
-  return `${prefix}${String(next).padStart(3, "0")}`;
+  return `${prefix}${String(next).padStart(4, "0")}`;
 };
 
-const makeDailyExpenseDocId = (date: string, expenses: DailyExpense[]) => {
-  const normalized = date.replace(/-/g, "");
-  const prefix =
-    normalized.length === 8
-      ? normalized
-      : new Date().toISOString().slice(0, 10).replace(/-/g, "");
+const makeDailyExpenseDocId = (_date: string, expenses: DailyExpense[]) => {
+  // Issue the ID once from today's local date; the expense date is independent.
+  const prefix = localDateKey();
   const next =
     expenses
       .filter((expense) => expense.docId?.startsWith(prefix))
@@ -836,6 +838,8 @@ const toLocalDateTimeInputValue = (value: string | Date = new Date()) => {
 
 const normalizeLoginIdentifier = (value: string) =>
   value.trim().toLowerCase().replace(/\s+/g, "");
+const normalizeCompanyName = (value: string) =>
+  value.trim().replace(/\s+/g, " ").toLowerCase();
 const isPasswordValid = (value: string) => {
   const types = [
     /[a-z]/.test(value),
@@ -1445,6 +1449,8 @@ export default function App() {
   const [recentClientsCollapsed, setRecentClientsCollapsed] = useState(true);
   const [remindersCollapsed, setRemindersCollapsed] = useState(true);
   const [profitAnalysisCollapsed, setProfitAnalysisCollapsed] = useState(true);
+  const [profitSearch, setProfitSearch] = useState("");
+  const [profitArrearsOnly, setProfitArrearsOnly] = useState(false);
   const [profitFilters, setProfitFilters] = useState({
     startDate: "",
     endDate: "",
@@ -1564,6 +1570,7 @@ export default function App() {
     DailyExpense | "new" | null
   >(null);
   const [formDailyExpense, setFormDailyExpense] = useState({
+    docId: "",
     recordDate: toLocalDateTimeInputValue().slice(0, 10),
     expenseType: "",
     reimburser: "",
@@ -1935,8 +1942,30 @@ export default function App() {
             arrears: Math.max(0, revenue - received),
           };
         })
+        .filter((row) => {
+          const keyword = profitSearch.trim().toLocaleLowerCase();
+          const matchesSearch =
+            !keyword ||
+            [
+              row.docId,
+              row.client,
+              row.feeType,
+              row.employee,
+              row.startDate,
+              row.endDate,
+            ].some((value) => value.toLocaleLowerCase().includes(keyword));
+          return matchesSearch && (!profitArrearsOnly || row.arrears > 0);
+        })
         .sort((left, right) => right.startDate.localeCompare(left.startDate)),
-    [records, costs, payments, clients, profitFilters],
+    [
+      records,
+      costs,
+      payments,
+      clients,
+      profitFilters,
+      profitSearch,
+      profitArrearsOnly,
+    ],
   );
   const profitAnalysisSummary = useMemo(
     () =>
@@ -1961,7 +1990,7 @@ export default function App() {
   );
   useEffect(() => {
     setProfitAnalysisPage(1);
-  }, [profitFilters]);
+  }, [profitFilters, profitSearch, profitArrearsOnly]);
   useEffect(() => {
     setProfitAnalysisPage((current) =>
       Math.min(current, profitAnalysisPageCount),
@@ -3346,7 +3375,8 @@ export default function App() {
     );
   }
   function saveClient() {
-    if (!formClient.name.trim() || !formClient.company.trim()) {
+    const company = formClient.company.trim().replace(/\s+/g, " ");
+    if (!formClient.name.trim() || !company) {
       notify("请填写公司名称和客户姓名");
       return;
     }
@@ -3362,8 +3392,19 @@ export default function App() {
       notify("结束时间不能早于开始时间");
       return;
     }
+    const duplicateCompany = clients.some(
+      (client) =>
+        client.id !== (clientModal === "new" ? "" : clientModal?.id) &&
+        normalizeCompanyName(String(client.company || "")) ===
+          normalizeCompanyName(company),
+    );
+    if (duplicateCompany) {
+      notify("公司名称已存在，请勿重复添加");
+      return;
+    }
     const nextClient = {
       ...formClient,
+      company,
       groupId: formClient.customerTypeId,
       customerTypeId: formClient.customerTypeId,
     };
@@ -4577,6 +4618,7 @@ export default function App() {
     }
     if (expense === "new") {
       setFormDailyExpense({
+        docId: makeDailyExpenseDocId("", dailyExpenses),
         recordDate: toLocalDateTimeInputValue().slice(0, 10),
         expenseType: dailyExpenseTypes[0] || "",
         reimburser: reimbursers[0] || "",
@@ -4586,6 +4628,7 @@ export default function App() {
       setSavedDailyExpenseAttachments([]);
     } else {
       setFormDailyExpense({
+        docId: expense.docId,
         recordDate: expense.recordDate,
         expenseType: expense.expenseType,
         reimburser: expense.reimburser,
@@ -4711,10 +4754,7 @@ export default function App() {
       };
       if (dailyExpenseModal === "new") {
         const id = "de" + Date.now();
-        const docId = makeDailyExpenseDocId(
-          formDailyExpense.recordDate,
-          dailyExpenses,
-        );
+        const docId = formDailyExpense.docId;
         setDailyExpenses((current) => [{ id, docId, ...details }, ...current]);
         recordAudit(
           "create",
@@ -6643,7 +6683,35 @@ export default function App() {
           </div>
           <ChevronDown size={17} />
         </button>
-        <TrendingUp size={18} aria-hidden="true" />
+        <div className="profit-analysis-head-actions">
+          <label className="profit-analysis-search">
+            <Search size={14} aria-hidden="true" />
+            <input
+              type="search"
+              value={profitSearch}
+              onChange={(event) => setProfitSearch(event.target.value)}
+              placeholder="搜索单据、客户或业务员"
+              aria-label="搜索利润分析"
+            />
+          </label>
+          <button
+            type="button"
+            className={
+              "profit-arrears-toggle " +
+              (profitArrearsOnly ? "is-active" : "")
+            }
+            onClick={() => setProfitArrearsOnly((current) => !current)}
+            aria-pressed={profitArrearsOnly}
+          >
+            <Banknote size={14} aria-hidden="true" />
+            只显示欠款
+          </button>
+        </div>
+        <TrendingUp
+          className="profit-analysis-head-icon"
+          size={18}
+          aria-hidden="true"
+        />
       </div>
       <div className="profit-analysis-body">
         <div className="profit-filter-bar" aria-label="利润分析筛选条件">
@@ -6757,7 +6825,7 @@ export default function App() {
           </label>
           <button
             className="text-btn profit-filter-reset"
-            onClick={() =>
+            onClick={() => {
               setProfitFilters({
                 startDate: "",
                 endDate: "",
@@ -6765,9 +6833,15 @@ export default function App() {
                 clientId: "",
                 feeType: "",
                 docId: "",
-              })
+              });
+              setProfitSearch("");
+              setProfitArrearsOnly(false);
+            }}
+            disabled={
+              !Object.values(profitFilters).some(Boolean) &&
+              !profitSearch &&
+              !profitArrearsOnly
             }
-            disabled={!Object.values(profitFilters).some(Boolean)}
           >
             清除筛选
           </button>
@@ -9696,10 +9770,7 @@ export default function App() {
               <input
                 value={
                   dailyExpenseModal === "new"
-                    ? makeDailyExpenseDocId(
-                        formDailyExpense.recordDate,
-                        dailyExpenses,
-                      )
+                    ? formDailyExpense.docId
                     : dailyExpenseModal.docId
                 }
                 readOnly

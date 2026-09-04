@@ -215,10 +215,82 @@
 .main > .profit-analysis-panel { order: 3; margin-top: 18px; }
 .main > .dashboard-grid { order: 4; }
 
-.profit-analysis-panel .panel-head > svg {
-  margin-left: 14px;
+.profit-analysis-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  margin-left: 18px;
+}
+
+/* Keep the compact controls beside the panel title until the phone breakpoint. */
+.profit-analysis-panel .panel-collapse-head {
+  flex: 0 1 auto;
+}
+
+.profit-analysis-head-actions {
+  flex: 0 1 auto;
+}
+
+.profit-analysis-head-icon {
+  margin-left: auto;
   flex: 0 0 auto;
   color: #398277;
+}
+
+.profit-analysis-search {
+  display: flex;
+  align-items: center;
+  width: min(190px, 24vw);
+  min-width: 0;
+  height: 34px;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid #d8e4e1;
+  border-radius: 5px;
+  background: #fff;
+  color: #7a8a87;
+}
+
+.profit-analysis-search input {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #2d4140;
+  font-size: 12px;
+}
+
+.profit-analysis-search input:focus-visible {
+  outline: 2px solid #398277;
+  outline-offset: 1px;
+}
+
+.profit-arrears-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  gap: 5px;
+  padding: 0 10px;
+  border: 1px solid #d8e4e1;
+  border-radius: 5px;
+  color: #52615f;
+  background: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: background .18s, border-color .18s, color .18s;
+}
+
+.profit-arrears-toggle:hover,
+.profit-arrears-toggle.is-active {
+  border-color: #77aaa0;
+  color: #1b6661;
+  background: #edf6f3;
 }
 
 .profit-analysis-body { min-width: 0; }
@@ -326,6 +398,10 @@
 
 @media (max-width: 760px) {
   .main > .profit-analysis-panel { margin-top: 14px; }
+  .profit-analysis-panel .panel-head { gap: 8px; padding: 12px 14px; }
+  .profit-analysis-panel .panel-collapse-head { min-width: 0; }
+  .profit-analysis-head-actions { margin-left: 8px; gap: 5px; }
+  .profit-analysis-search { width: min(170px, 24vw); }
   .profit-filter-bar { grid-template-columns: 1fr; padding: 12px; }
   .profit-filter-reset { justify-self: start; }
   .profit-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 12px; }
@@ -342,4 +418,19 @@
   .company-expense-analysis-panel { margin-top: 14px; }
   .company-expense-filter-bar { grid-template-columns: 1fr; }
   .company-expense-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 520px) {
+  .profit-analysis-panel .panel-head { flex-wrap: wrap; }
+  .profit-analysis-head-actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .profit-analysis-head-icon { display: none; }
+  .profit-analysis-search {
+    width: auto;
+    flex: 1 1 180px;
+  }
 }
